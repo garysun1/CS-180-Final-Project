@@ -18,7 +18,8 @@ import numpy as np
 
 from .video_io import to_float, to_uint8
 
-STYLES = ("night", "century", "painting", "ink", "winter", "underwater", "thermal", "neon", "sketch", "autumn")
+STYLES = ("night", "century", "painting", "ink", "winter", "underwater", "thermal", "neon", "sketch", "autumn",
+          "overgrown")
 
 
 @lru_cache(maxsize=8)
@@ -161,6 +162,32 @@ def autumn(img: np.ndarray, **_) -> np.ndarray:
     return autumn_grade(np.clip(mixed, 0, 255).astype(np.uint8))
 
 
+# ---- overgrown: moss and weeds creeping over everything that is not already green -----------
+@lru_cache(maxsize=4)
+def _moss_noise(h: int, w: int, seed: int) -> np.ndarray:
+    """Blotchy multi-scale noise in [0, 1] (where moss grows)."""
+    rng = np.random.default_rng(seed + 21)
+    acc = np.zeros((h, w), np.float32)
+    for scale, amp in ((48, 1.0), (16, 0.5), (6, 0.25)):
+        g = rng.normal(0, 1, (max(2, h // scale), max(2, w // scale))).astype(np.float32)
+        acc += amp * cv2.resize(g, (w, h), interpolation=cv2.INTER_CUBIC)
+    acc = (acc - acc.min()) / (acc.max() - acc.min() + 1e-6)
+    return acc
+
+
+def overgrown(img: np.ndarray, seed: int = 0, **_) -> np.ndarray:
+    """A colour cue for 'nature took over': moss patches on paved ground and walls, duller light."""
+    h, w = img.shape[:2]
+    f = to_float(img)
+    y = _luma(f)[..., None]
+    f = 0.75 * f + 0.25 * y                                           # weathered, duller
+    moss = np.clip((_moss_noise(h, w, seed) - 0.45) / 0.2, 0, 1)
+    moss = moss * np.linspace(0.6, 1.0, h, dtype=np.float32)[:, None]  # more growth near the camera
+    green = np.array([0.18, 0.42, 0.25], np.float32) * (0.6 + 0.8 * y)  # BGR moss, keeps shading
+    f = f * (1 - 0.85 * moss[..., None]) + green * (0.85 * moss[..., None])
+    return to_uint8(f * 0.92)
+
+
 # ---- underwater: absorption + haze, like the proposal mock-up ------------------------------
 @lru_cache(maxsize=4)
 def _depth_ramp(h: int, w: int) -> np.ndarray:
@@ -243,7 +270,8 @@ def sketch(img: np.ndarray, seed: int = 0, **_) -> np.ndarray:
 
 
 _FUNCS = {"night": night, "century": century, "painting": painting, "ink": ink, "winter": winter,
-          "underwater": underwater, "thermal": thermal, "neon": neon, "sketch": sketch, "autumn": autumn}
+          "underwater": underwater, "thermal": thermal, "neon": neon, "sketch": sketch, "autumn": autumn,
+          "overgrown": overgrown}
 # per-frame functions for people; must be pixelwise (see module docstring)
 PERSON_FUNCS = {"night": night, "century": century, "winter": winter_grade, "underwater": underwater,
                 "thermal": thermal_person, "neon": neon_grade, "autumn": autumn_grade}

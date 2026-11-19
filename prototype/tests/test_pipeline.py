@@ -296,3 +296,31 @@ def test_depth_wave_endpoints():
     assert ds.background_weight().max() < 1e-6
     ds.tau = -0.12                                                # wave has passed the camera: everything changed
     assert ds.background_weight().min() > 1 - 1e-6
+
+
+from crossover.effects import portal_q, portal_weight, voronoi_cells, windows_frame  # noqa: E402
+
+
+def test_shards_are_nearest_seed_and_deterministic():
+    lab, pts = voronoi_cells(H, W, 14, seed=3)
+    for k, (x, y) in enumerate(pts):
+        assert lab[int(y), int(x)] == k                          # a seed lies in its own shard
+    lab2, _ = voronoi_cells(H, W, 14, seed=3)
+    assert np.array_equal(lab, lab2)
+    assert len(np.unique(lab)) == 14
+
+
+def test_portal_inside_outside_and_rim():
+    q = portal_q(H, W, W / 2, H / 2, 60, 0.4)
+    w = portal_weight(q)
+    assert w[H // 2, W // 2] == 1.0 and w[5, 5] == 0.0
+    assert abs(q[H // 2, W // 2 + 60] - 1.0) < 0.02              # the ring is at radius r
+    assert abs(q[H // 2 + 24, W // 2] - 1.0) < 0.05              # ... and r * squash vertically
+
+
+def test_windows_show_other_world_only_inside_people(scene):
+    frames, masks = walkers(scene)
+    F, R = to_float(frames[4]), to_float(apply_style(scene, "night"))
+    a = masks[4].astype(np.float32)
+    out = windows_frame(F, R, a)
+    assert np.array_equal(out[a == 0], F[a == 0]) and np.allclose(out[a == 1], R[a == 1])

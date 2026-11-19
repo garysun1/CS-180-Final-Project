@@ -41,13 +41,22 @@ PROMPTS = {
                   "blue-green water, light rays from above, fish swimming",
     "painting": "impressionist oil painting of the campus plaza, thick visible brush strokes, Claude Monet style, "
                 "vivid colors",
+    "cyberpunk": "the same campus plaza as a cyberpunk city at night, glowing pink and cyan neon signs, holographic "
+                 "billboards on the buildings, wet reflective pavement, rain, cinematic",
+    "vangogh": "the same campus plaza as a Vincent van Gogh oil painting, swirling thick impasto brush strokes, "
+               "starry night style, vivid blue and yellow",
+    "overgrown": "the same campus plaza fifty years after people left, overgrown with vines, moss and tall wild grass, "
+                 "cracked pavement, small trees growing through the ground, photograph, realistic",
+    "anime": "the same campus plaza as a Studio Ghibli anime background painting, soft watercolor, hand-drawn, "
+             "clean lines, bright summer day",
 }
 NEGATIVE = "people, person, crowd, pedestrians, blurry, distorted, deformed, text, watermark, frame"
 # --init filter: start img2img from our colour-filter version instead of the raw plate. The filter
 # gives the colour layout the model would not invent from a green lawn (white snow, dark night,
 # sepia); diffusion then adds the real content (snow texture, lit windows, period details).
 INIT_FILTER = {"winter": "winter", "night": "night", "1920s": "century", "underwater": "underwater",
-               "painting": "painting", "autumn": "autumn"}
+               "painting": "painting", "autumn": "autumn", "cyberpunk": "neon", "vangogh": "painting",
+               "anime": "painting", "overgrown": "overgrown"}
 
 
 def control_images(clean_bgr: np.ndarray, disparity: np.ndarray):

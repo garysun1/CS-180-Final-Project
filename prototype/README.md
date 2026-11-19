@@ -22,7 +22,7 @@ filmed frame F                  |  a·P + (1−a)·R·S
 ```bash
 pip install -r requirements.txt
 bash scripts/fetch_sample.sh             # stand-in tripod clip: OpenCV's vtest.avi (768x576, 795 frames)
-python -m pytest -q tests                # 19 synthetic tests with exact known answers
+python -m pytest -q tests                # 22 synthetic tests with exact known answers
 python -m crossover.run --video data/sample/vtest.avi --style century --perturb --local-warp --out out/vtest_century
 bash scripts/run_all_sample.sh           # century / night / painting / ink + a moving line (~6 min)
 bash scripts/fetch_depth_model.sh        # Depth Anything V2 Small, ONNX, 99 MB (for --split depth)
@@ -355,6 +355,25 @@ image generation):
   - Trails are bright when fresh and thaw back to today with a 6 s half-life.
 - **Showcase** (`python scripts/showcase.py -o out/showcase.mp4`): a 50 s cut with title card, seam,
   seasons, trails, depth split and end card.
+
+## More clips, styles and effects
+
+- **New clips** (`bash scripts/fetch_clips.sh`, MIT-licensed public footage):
+  - `python -m crossover.prepare <video> --name <n>` normalises a clip and builds its clean plate and
+    depth.
+  - It also checks that the camera is really fixed (`static.json`). Of 10 clips only 2 passed: a
+    London night street (`crowd04`) and a highway (`cartraffic01`). The others are handheld or
+    panning, which this method cannot handle.
+- **New styles:** `cyberpunk`, `vangogh`, `overgrown` and `anime` in `crossover/generate.py`.
+  - Cyberpunk and Van Gogh work well. Van Gogh needs strength 0.95 and guidance 2.0.
+  - Anime and overgrown barely change the scene.
+- **New effects** (`python -m crossover.effects shards|windows|portal ...`):
+  - **shards:** glass shards that each show a world and flip one by one.
+  - **windows:** people are cut-out windows into another world.
+  - **portal:** a ring on the ground; whoever's feet are inside changes.
+  - Windows needs clean masks: on the busy night street the CPU masks catch shop-front clutter.
+- **Showcase:** `python scripts/showcase.py -o out/showcase2.mp4 --segments segments.json` builds a
+  cut from any list of clips.
 
 ## Shooting checklist for the real clips
 

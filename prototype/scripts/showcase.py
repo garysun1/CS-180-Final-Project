@@ -2,8 +2,10 @@
 split, end card - with crossfades and captions.
 
     python scripts/showcase.py -o out/showcase.mp4
+    python scripts/showcase.py -o out/showcase2.mp4 --segments segments.json   # [[video, start, end, speed, caption], ...]
 """
 import argparse
+import json
 import os
 import sys
 
@@ -73,6 +75,19 @@ def caption(frame, text):
     return cv2.cvtColor(np.array(im), cv2.COLOR_RGB2BGR)
 
 
+def fit(frame):
+    """Letterbox any clip size into the W x H canvas."""
+    h, w = frame.shape[:2]
+    if (w, h) == (W, H):
+        return frame
+    s = min(W / w, H / h)
+    small = cv2.resize(frame, (int(w * s), int(h * s)), interpolation=cv2.INTER_AREA)
+    canvas = np.full((H, W, 3), BG[::-1], np.uint8)
+    y0, x0 = (H - small.shape[0]) // 2, (W - small.shape[1]) // 2
+    canvas[y0:y0 + small.shape[0], x0:x0 + small.shape[1]] = small
+    return canvas
+
+
 def clip_frames(path, start, end, speed, text):
     cap = cv2.VideoCapture(path)
     if not cap.isOpened():
@@ -85,7 +100,7 @@ def clip_frames(path, start, end, speed, text):
         if not ok:
             break
         if k % speed == 0:
-            yield caption(f, text)
+            yield caption(fit(f), text)
     cap.release()
 
 
@@ -98,13 +113,15 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("-o", "--out", default="out/showcase.mp4")
     ap.add_argument("--xfade", type=int, default=6, help="crossfade length in frames")
+    ap.add_argument("--segments", help="JSON list of [video, start s, end s, speed, caption]")
     a = ap.parse_args()
+    segments = [tuple(x) for x in json.load(open(a.segments))] if a.segments else SEGMENTS
     title = card([("Cross the Line", 64, INK, True),
                   ("a tripod video, restyled once by an image model", 22, (179, 187, 198), False)], glow_title=True)
-    end = card([("One generated image per world.", 30, INK, True),
+    end = card([("Three clips, one generated image per world.", 28, INK, True),
                 ("Stable Diffusion + ControlNet, depth from Depth Anything, all on a CPU.", 18, (179, 187, 198), False),
                 ("CS180 / 280A final project", 18, (130, 140, 153), False)])
-    segs = [still(title, 2.5)] + [clip_frames(*s) for s in SEGMENTS] + [still(end, 3.0)]
+    segs = [still(title, 2.5)] + [clip_frames(*s) for s in segments] + [still(end, 3.0)]
     vw = VideoWriter(a.out, W, H, FPS)
     tail: list = []
     n = 0
