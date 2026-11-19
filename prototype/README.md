@@ -22,7 +22,7 @@ filmed frame F                  |  a·P + (1−a)·R·S
 ```bash
 pip install -r requirements.txt
 bash scripts/fetch_sample.sh             # stand-in tripod clip: OpenCV's vtest.avi (768x576, 795 frames)
-python -m pytest -q tests                # 17 synthetic tests with exact known answers
+python -m pytest -q tests                # 19 synthetic tests with exact known answers
 python -m crossover.run --video data/sample/vtest.avi --style century --perturb --local-warp --out out/vtest_century
 bash scripts/run_all_sample.sh           # century / night / painting / ink + a moving line (~6 min)
 bash scripts/fetch_depth_model.sh        # Depth Anything V2 Small, ONNX, 99 MB (for --split depth)
@@ -339,6 +339,23 @@ gets falling snow and underwater gets caustics.
    FLUX.2 Klein or Qwen-Image-Edit on a GPU should do better. The same `--restyled` path takes
    their output unchanged.
 
+## Seam-free effects and the showcase cut
+
+The same compositing with a different per-pixel weight w, using the generated worlds above (no new
+image generation):
+
+- **Seasons roll in** (`python -m crossover.effects seasons --out out/fx_seasons`):
+  - The plaza morphs Today → Autumn → Winter → Night → 1920.
+  - Each new world arrives as a depth wave from the horizon toward the camera, with a glowing
+    wavefront.
+  - People switch when the wave reaches the ground under their feet.
+- **Footsteps paint the world** (`python -m crossover.effects trails --world winter --out out/fx_trails`):
+  - Every walker carries winter with them and stamps it on the ground at their feet (sized by their
+    height).
+  - Trails are bright when fresh and thaw back to today with a 6 s half-life.
+- **Showcase** (`python scripts/showcase.py -o out/showcase.mp4`): a 50 s cut with title card, seam,
+  seasons, trails, depth split and end card.
+
 ## Shooting checklist for the real clips
 
 - Tripod. Lock **exposure, focus and white balance** (on iPhone, long-press for AE/AF lock; set
@@ -353,7 +370,7 @@ gets falling snow and underwater gets caustics.
 ## Layout
 
 ```
-crossover/  video_io  background  styles  animate  perturb  align  masks  depth  composite  line  metrics  figures  run  score
+crossover/  video_io  background  styles  animate  perturb  align  masks  depth  composite  line  metrics  figures  run  score  generate  colormap  effects
 notebooks/gpu_restyle_and_sam3.ipynb   Colab: FLUX.2 Klein / Qwen-Image-Edit / SDXL+ControlNet restyles, SAM 3 masks (UNTESTED)
 scripts/    fetch_sample.sh  fetch_depth_model.sh  run_all_sample.sh  run_style_demos.sh  contact_sheet.py  demo_reel.py  summarize.py
 tests/      test_pipeline.py

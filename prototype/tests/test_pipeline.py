@@ -268,3 +268,31 @@ def test_colormap_ignores_content_swaps(scene):
     want = A(to_float(scene))[150:260, 40:200]
     assert np.abs(got - want).mean() < 0.04
     assert np.array_equal(lac.apply(scene), lac.apply(scene))   # deterministic
+
+
+# ------------------------------------------------------------------ seam-free effects
+from crossover.effects import feet, trail_step  # noqa: E402
+
+
+def test_trail_stamps_at_the_feet_and_fades_by_half():
+    a = np.zeros((H, W), np.float32)
+    a[100:200, 150:170] = 1.0                                     # person: feet at y = 199
+    (fx, fy, bh), = feet(a, 50)
+    assert abs(fy - 199) < 1 and abs(fx - 159.5) < 2 and bh == 100
+    paint = trail_step(np.zeros((H, W), np.float32), a, decay=1.0, blur_px=2.0, min_area=50)
+    assert paint[199, 160] > 0.5 and paint[20, 20] == 0.0         # on the ground at the feet, nowhere else
+    fps, halflife = 10, 3.0
+    decay = 0.5 ** (1 / (halflife * fps))
+    p0 = paint[199, 160]
+    empty = np.zeros_like(a)
+    for _ in range(int(halflife * fps)):
+        paint = trail_step(paint, empty, decay, 2.0, 50)
+    assert abs(paint[199, 160] - 0.5 * p0) < 1e-3                 # half gone after one half-life
+
+
+def test_depth_wave_endpoints():
+    ds = DepthSplit(_ramp(), band=0.05)
+    ds.tau = 1.08                                                 # wave not started: nothing changes
+    assert ds.background_weight().max() < 1e-6
+    ds.tau = -0.12                                                # wave has passed the camera: everything changed
+    assert ds.background_weight().min() > 1 - 1e-6

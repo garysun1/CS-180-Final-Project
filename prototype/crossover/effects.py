@@ -138,6 +138,17 @@ def feet(alpha: np.ndarray, min_area: float):
     return out
 
 
+def trail_step(paint: np.ndarray, alpha: np.ndarray, decay: float, blur_px: float, min_area: float) -> np.ndarray:
+    """One frame of the trail map: old trails fade by `decay`; each person stamps a soft ellipse on
+    the ground at their feet, sized by their height (so perspective comes for free)."""
+    stamp = np.zeros_like(paint)
+    for fx, fy, bh in feet(alpha, min_area):
+        cv2.ellipse(stamp, (int(fx), int(fy)), (max(2, int(0.55 * bh)), max(1, int(0.2 * bh))),
+                    0, 0, 360, 1.0, -1, cv2.LINE_AA)
+    stamp = cv2.GaussianBlur(stamp, (0, 0), blur_px)
+    return np.maximum(paint * decay, stamp)
+
+
 def run_trails(a):
     bg, picks, _ = load_inputs(a)
     info = probe(a.video)
@@ -157,20 +168,15 @@ def run_trails(a):
     for i, frame, alpha in masker.iter_alphas(iter_frames(a.video, 1.0, n)):
         F = to_float(frame)
         S, _ = shadow(F, alpha)
-        paint *= decay
-        stamp = np.zeros((H, W), np.float32)
-        for fx, fy, bh in feet(alpha, 3e-4 * H * W):
-            # an ellipse on the ground at the feet, sized by the person (perspective for free)
-            cv2.ellipse(stamp, (int(fx), int(fy)), (max(2, int(0.55 * bh)), max(1, int(0.2 * bh))),
-                        0, 0, 360, 1.0, -1, cv2.LINE_AA)
-        stamp = cv2.GaussianBlur(stamp, (0, 0), 3.0 * s)
-        paint = np.maximum(paint, stamp)
+        paint = trail_step(paint, alpha, decay, 3.0 * s, 3e-4 * H * W)
         wb = smoothstep((paint - 0.35) / 0.35)                  # the trail on the ground
         w = alpha + (1 - alpha) * wb                            # walkers themselves are in the other world
         G = world.render(i, F, frame, alpha, S, ones)
+        # fresh trail is bright (new snow), fading toward the generated ground as it thaws
+        G = G + (a.fresh * paint * (1 - alpha))[..., None] * (1 - G)
         out = F + w[..., None] * (G - F)
         rim = np.exp(-((paint - 0.35) / 0.07) ** 2) * (paint > 0.05) * (1 - alpha)
-        glow = (0.55 * rim)[..., None] * np.array(rim_color, np.float32)
+        glow = (0.7 * rim)[..., None] * np.array(rim_color, np.float32)
         img = to_uint8(screen(out, glow))
         vw.write(img)
         if i in a.stills:
@@ -200,6 +206,7 @@ def main(argv=None):
     ap.add_argument("--band", type=float, default=0.05, help="seasons: softness of the wavefront")
     ap.add_argument("--world", default="winter", help="trails: which world the walkers carry")
     ap.add_argument("--halflife", type=float, default=6.0, help="trails: seconds for a trail to fade halfway")
+    ap.add_argument("--fresh", type=float, default=0.35, help="trails: how much brighter freshly painted ground is")
     a = ap.parse_args(argv)
     a.stills = {int(x) for x in a.stills.split(",") if x.strip()}
     (run_seasons if a.effect == "seasons" else run_trails)(a)
