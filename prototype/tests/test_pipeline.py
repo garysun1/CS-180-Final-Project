@@ -324,3 +324,13 @@ def test_windows_show_other_world_only_inside_people(scene):
     a = masks[4].astype(np.float32)
     out = windows_frame(F, R, a)
     assert np.array_equal(out[a == 0], F[a == 0]) and np.allclose(out[a == 1], R[a == 1])
+
+
+def test_comic_is_pixelwise_for_people(scene):
+    """People get comic_grade per frame; outside them it must equal the plate's grade exactly."""
+    from crossover.styles import comic_grade
+    frames, masks = walkers(scene)
+    f, m = frames[6], masks[6]
+    out, ref = comic_grade(f), comic_grade(scene)
+    assert np.array_equal(out[m == 0], ref[m == 0])
+    assert out.shape == scene.shape and out.dtype == np.uint8

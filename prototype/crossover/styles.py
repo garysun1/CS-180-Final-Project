@@ -19,7 +19,7 @@ import numpy as np
 from .video_io import to_float, to_uint8
 
 STYLES = ("night", "century", "painting", "ink", "winter", "underwater", "thermal", "neon", "sketch", "autumn",
-          "overgrown")
+          "overgrown", "comic")
 
 
 @lru_cache(maxsize=8)
@@ -248,6 +248,39 @@ def neon(img: np.ndarray, **_) -> np.ndarray:
     return to_uint8(1 - (1 - base) * (1 - glow))                   # screen blend
 
 
+# ---- comic: posterised print with a halftone screen and ink lines ----------------------------
+@lru_cache(maxsize=4)
+def _halftone_screen(h: int, w: int, cell: float) -> np.ndarray:
+    """Distance to the nearest dot centre on a 45-degree grid, 0 (centre) .. ~1 (between dots).
+    Fixed in screen space, so it is identical on the plate and on people (no flicker)."""
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    u, v = (xs + ys) / np.sqrt(2), (xs - ys) / np.sqrt(2)
+    du, dv = (u % cell) / cell - 0.5, (v % cell) / cell - 0.5
+    return np.sqrt(du * du + dv * dv) / 0.7071
+
+
+def comic_grade(img: np.ndarray, **_) -> np.ndarray:
+    """Pixelwise comic print: punchier colour posterised to a few inks, halftone dots in the shadows."""
+    h, w = img.shape[:2]
+    hsv = _hsv(img)
+    hsv[..., 1] = np.clip(hsv[..., 1] * 1.6, 0, 255)
+    f = to_float(cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR))
+    q = np.round(f * 3) / 3                                         # 4 ink levels per channel
+    dark = 1 - _luma(f)
+    dots = (_halftone_screen(h, w, 5.0 * max(1.0, w / 768)) < np.clip(dark * 1.15 - 0.15, 0, 1)).astype(np.float32)
+    out = q * (1 - 0.6 * dots[..., None]) + 0.04
+    return to_uint8(out)
+
+
+def comic(img: np.ndarray, **_) -> np.ndarray:
+    s = max(1.0, img.shape[1] / 768)
+    out = comic_grade(img)
+    g = cv2.GaussianBlur(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), (0, 0), 1.4 * s)
+    ink = cv2.dilate(cv2.Canny(g, 50, 130), np.ones((2, 2), np.uint8)) > 0
+    out[ink] = (20, 18, 22)
+    return out
+
+
 # ---- sketch: pencil drawing on paper ----------------------------------------------------------
 @lru_cache(maxsize=4)
 def _paper(h: int, w: int, seed: int) -> np.ndarray:
@@ -271,10 +304,11 @@ def sketch(img: np.ndarray, seed: int = 0, **_) -> np.ndarray:
 
 _FUNCS = {"night": night, "century": century, "painting": painting, "ink": ink, "winter": winter,
           "underwater": underwater, "thermal": thermal, "neon": neon, "sketch": sketch, "autumn": autumn,
-          "overgrown": overgrown}
+          "overgrown": overgrown, "comic": comic}
 # per-frame functions for people; must be pixelwise (see module docstring)
 PERSON_FUNCS = {"night": night, "century": century, "winter": winter_grade, "underwater": underwater,
-                "thermal": thermal_person, "neon": neon_grade, "autumn": autumn_grade}
+                "thermal": thermal_person, "neon": neon_grade, "autumn": autumn_grade,
+                "comic": comic_grade}
 
 
 def apply_style(img: np.ndarray, name: str, seed: int = 0) -> np.ndarray:

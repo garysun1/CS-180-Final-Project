@@ -22,7 +22,7 @@ filmed frame F                  |  a·P + (1−a)·R·S
 ```bash
 pip install -r requirements.txt
 bash scripts/fetch_sample.sh             # stand-in tripod clip: OpenCV's vtest.avi (768x576, 795 frames)
-python -m pytest -q tests                # 22 synthetic tests with exact known answers
+python -m pytest -q tests                # 23 synthetic tests with exact known answers
 python -m crossover.run --video data/sample/vtest.avi --style century --perturb --local-warp --out out/vtest_century
 bash scripts/run_all_sample.sh           # century / night / painting / ink + a moving line (~6 min)
 bash scripts/fetch_depth_model.sh        # Depth Anything V2 Small, ONNX, 99 MB (for --split depth)
@@ -375,6 +375,30 @@ image generation):
 - **Showcase:** `python scripts/showcase.py -o out/showcase2.mp4 --segments segments.json` builds a
   cut from any list of clips.
 
+## Trailer
+
+`python -m crossover.trailer --out out/trailer.mp4` builds a 54.5 s trailer: 43 shots, 960×540 at 30 fps,
+with a soundtrack synthesized in code. Every shot is a whole number of beats at 120 BPM (15 frames), so
+cuts, flashes and hits line up.
+
+- **Story:**
+  - The real plaza, then "the camera never moves": the walkers vanish into the empty scene.
+  - Winter sweeps in from the horizon, and a man crosses the line on a bass hit.
+  - A montage ("any city / any era / any world") of the effects on three clips.
+  - A **style-glitch climax**: a follow-cam on one walker, whose figure flashes through comic,
+    thermal, ink, Van Gogh, cyberpunk, pixel, negative and more, every 4 → 2 → 1 frames, while
+    the world flashes and tears.
+  - A slow-motion London crossing, then the title.
+- **Options:**
+  - `--music track.mp3 --bpm N` swaps in a real track; cuts snap to its beat.
+  - `--sections cold,drop,glitch` renders a quick draft of some sections.
+- **Outputs:**
+  - `*_frames.jpg`: one frame per shot, for review;
+  - `*_edl.json`: shot timings;
+  - `*.wav`: the soundtrack.
+- **New `comic` style:** a posterised print with a screen-fixed halftone and ink lines. It works
+  pixel by pixel on people too, so it doesn't flicker.
+
 ## Shooting checklist for the real clips
 
 - Tripod. Lock **exposure, focus and white balance** (on iPhone, long-press for AE/AF lock; set
@@ -389,7 +413,7 @@ image generation):
 ## Layout
 
 ```
-crossover/  video_io  background  styles  animate  perturb  align  masks  depth  composite  line  metrics  figures  run  score  generate  colormap  effects
+crossover/  video_io  background  styles  animate  perturb  align  masks  depth  composite  line  metrics  figures  run  score  generate  colormap  effects  prepare  trailer
 notebooks/gpu_restyle_and_sam3.ipynb   Colab: FLUX.2 Klein / Qwen-Image-Edit / SDXL+ControlNet restyles, SAM 3 masks (UNTESTED)
 scripts/    fetch_sample.sh  fetch_depth_model.sh  run_all_sample.sh  run_style_demos.sh  contact_sheet.py  demo_reel.py  summarize.py
 tests/      test_pipeline.py

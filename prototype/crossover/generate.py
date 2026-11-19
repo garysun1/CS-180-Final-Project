@@ -49,6 +49,8 @@ PROMPTS = {
                  "cracked pavement, small trees growing through the ground, photograph, realistic",
     "anime": "the same campus plaza as a Studio Ghibli anime background painting, soft watercolor, hand-drawn, "
              "clean lines, bright summer day",
+    "comic": "the same campus plaza as a comic book panel, bold black ink outlines, halftone dots, Ben-Day dots, "
+             "flat vivid colors, pop art, graphic novel",
 }
 NEGATIVE = "people, person, crowd, pedestrians, blurry, distorted, deformed, text, watermark, frame"
 # --init filter: start img2img from our colour-filter version instead of the raw plate. The filter
@@ -56,7 +58,7 @@ NEGATIVE = "people, person, crowd, pedestrians, blurry, distorted, deformed, tex
 # sepia); diffusion then adds the real content (snow texture, lit windows, period details).
 INIT_FILTER = {"winter": "winter", "night": "night", "1920s": "century", "underwater": "underwater",
                "painting": "painting", "autumn": "autumn", "cyberpunk": "neon", "vangogh": "painting",
-               "anime": "painting", "overgrown": "overgrown"}
+               "anime": "painting", "overgrown": "overgrown", "comic": "comic"}
 
 
 def control_images(clean_bgr: np.ndarray, disparity: np.ndarray):
