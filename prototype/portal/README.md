@@ -26,7 +26,8 @@ for three seconds while the empty scene is captured. People may stay in view: th
 
 - **With the server running**, the captured scene is sent to it, and generated worlds appear one
   by one as they finish: Van Gogh, cyberpunk, winter, night, 1920s. Each takes seconds on an NVIDIA
-  GPU, longer on Apple Silicon, and about 1.5–2 min on a CPU.
+  GPU and longer on Apple Silicon (not measured). On this container's CPU the first world took
+  12 min, including the model load, while the browser shared the CPU; plan on a GPU laptop.
   - Needs `pip install -r requirements-gen.txt`, the depth model (`bash scripts/fetch_depth_model.sh`)
     and Hugging Face access the first time.
 - **Without generation** (`--no-generate`), the six shader worlds work instantly. You can also drop
