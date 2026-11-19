@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Cross the Line — Portal</title>
+<style>
+  :root { --bg: #07090c; --ink: #e8ebef; --ink-2: #aab3bf; --seam: #bfe9ff; --sepia: #d4b07a; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); overflow: hidden;
+    font: 15px/1.45 "Inter", system-ui, -apple-system, "Segoe UI", sans-serif; }
+  #stage { position: fixed; inset: 0; display: grid; place-items: center; }
+  canvas { display: block; background: #000; cursor: crosshair; touch-action: none; }
+  .hud { position: fixed; left: 18px; top: 14px; font: 600 14px/1.4 ui-monospace, Menlo, monospace;
+    letter-spacing: .06em; text-transform: uppercase; text-shadow: 0 1px 6px #000; pointer-events: none; }
+  .hud small { display: block; font-weight: 400; color: var(--ink-2); text-transform: none; letter-spacing: 0; }
+  #notice { position: fixed; right: 18px; bottom: 14px; font-size: 13px; color: var(--ink-2);
+    text-shadow: 0 1px 6px #000; pointer-events: none; }
+  #notice b { color: #ff6b6b; }
+  #toast { position: fixed; left: 50%; bottom: 46px; transform: translateX(-50%); padding: 8px 14px;
+    background: rgba(10, 13, 18, .82); border: 1px solid #263040; border-radius: 8px; font-size: 14px;
+    opacity: 0; transition: opacity .25s; pointer-events: none; white-space: nowrap; }
+  #toast.on { opacity: 1; }
+  #count { position: fixed; inset: 0; display: grid; place-items: center; pointer-events: none;
+    font: 700 min(18vw, 160px)/1 "Space Grotesk", system-ui, sans-serif; text-shadow: 0 4px 40px #000; }
+  #count small { display: block; font: 500 20px/1.3 system-ui, sans-serif; text-align: center; color: var(--ink-2); }
+  .panel { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(5, 7, 10, .88); }
+  .card { max-width: 560px; padding: 28px 32px; text-align: center; }
+  .title { font: 700 clamp(40px, 7vw, 76px)/1 "Space Grotesk", system-ui, sans-serif; letter-spacing: -.02em; margin: 0 0 14px;
+    background: linear-gradient(90deg, var(--ink) 0 50%, var(--sepia) 50% 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  button { font: 600 17px system-ui, sans-serif; color: #07090c; background: var(--seam); border: 0; border-radius: 999px;
+    padding: 12px 26px; cursor: pointer; }
+  button:focus-visible { outline: 3px solid #fff; outline-offset: 3px; }
+  .keys { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; text-align: left; font-size: 14px; color: var(--ink-2); }
+  .keys kbd { font: 600 13px ui-monospace, Menlo, monospace; color: var(--ink); background: #1b212b; border: 1px solid #2b3442;
+    border-radius: 5px; padding: 1px 7px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="view" width="640" height="480"></canvas></div>
+<div class="hud" id="hud">Cross the Line<small id="hudsub"></small></div>
+<div id="notice"><b>●</b> Live camera · nothing is recorded</div>
+<div id="toast"></div>
+<div id="count" hidden></div>
+
+<div class="panel" id="start">
+  <div class="card">
+    <h1 class="title">Cross the Line</h1>
+    <p style="color: var(--ink-2); margin: 0 0 22px">Step across the line and walk into another world.<br>
+      The camera stays on this laptop. Nothing is recorded or uploaded.</p>
+    <button id="go">Start the portal</button>
+    <p style="color: var(--ink-2); font-size: 13px; margin-top: 18px">Press <b>H</b> any time for controls.</p>
+  </div>
+</div>
+
+<div class="panel" id="help" hidden>
+  <div class="card">
+    <h2 style="margin-top: 0">Controls</h2>
+    <div class="keys">
+      <kbd>1</kbd><span>–<kbd>9</kbd> choose a world (<kbd>N</kbd> next, <kbd>Space</kbd> auto-cycle)</span>
+      <kbd>M</kbd><span>rule: line, portal ring, lens, whole frame</span>
+      <kbd>drag</kbd><span>move the line or ring; the lens follows the pointer; scroll to resize</span>
+      <kbd>[ ]</kbd><span>tilt the line; <kbd>←</kbd> <kbd>→</kbd> move it</span>
+      <kbd>C</kbd><span>recapture the empty scene (people may stay; they are masked out)</span>
+      <kbd>G</kbd><span>glitch burst; <kbd>X</kbd> auto-glitch on every crossing</span>
+      <kbd>B</kbd><span>switch between camera and the recorded fallback clip</span>
+      <kbd>R</kbd><span>mirror · <kbd>F</kbd> fullscreen · <kbd>S</kbd> sound · <kbd>D</kbd> debug · <kbd>T</kbd> hole filling</span>
+      <kbd>drop</kbd><span>drop an image of this exact view to add it as a world</span>
+    </div>
+    <p style="color: var(--ink-2); font-size: 13px">Press <b>H</b> to close.</p>
+  </div>
+</div>
+
+<video id="cam" playsinline muted hidden></video>
+<video id="clip" playsinline muted loop hidden></video>
+<script type="module" src="./app.js"></script>
+</body>
+</html>

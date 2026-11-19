@@ -334,3 +334,64 @@ def test_comic_is_pixelwise_for_people(scene):
     out, ref = comic_grade(f), comic_grade(scene)
     assert np.array_equal(out[m == 0], ref[m == 0])
     assert out.shape == scene.shape and out.dtype == np.uint8
+
+
+# ------------------------------------------------------------------ portal kiosk: server + world generation
+def test_restyle_plate_writes_one_world_per_style(tmp_path, scene, monkeypatch):
+    import crossover.generate as gen
+    calls = []
+
+    def fake_restyle(pipe, clean, depth_img, canny_img, prompt, seed, strength, steps, guidance, init_bgr=None):
+        calls.append((prompt, strength, steps))
+        return 255 - clean
+    monkeypatch.setattr(gen, "restyle", fake_restyle)
+    done = []
+    paths = gen.restyle_plate(scene, ["vangogh", "night"], str(tmp_path), pipe=object(),
+                              disparity=np.ones(scene.shape[:2], np.float32), max_width=200,
+                              on_done=lambda s, p: done.append(s))
+    assert [os.path.basename(p) for p in paths] == ["vangogh.png", "night.png"] and done == ["vangogh", "night"]
+    assert cv2.imread(paths[0]).shape == scene.shape                  # resized back to the plate
+    assert "campus plaza" not in calls[0][0] and calls[0][1] == 0.95 and calls[1][1] == 0.8
+    stop = gen.restyle_plate(scene, ["vangogh", "night"], str(tmp_path / "s"), pipe=object(),
+                             disparity=np.ones(scene.shape[:2], np.float32), should_stop=lambda: True)
+    assert stop == []
+
+
+def test_portal_server_plate_to_worlds(tmp_path, scene, monkeypatch):
+    import json
+    import threading
+    import time
+    import urllib.request
+    from crossover import portal_server as ps
+
+    portal = tmp_path / "portal"
+    (portal / "runtime").mkdir(parents=True)
+    (portal / "index.html").write_text("<p>portal</p>")
+    monkeypatch.setattr(ps, "PORTAL_DIR", str(portal))
+
+    def fake_gen(plate, styles, out_dir, on_done, should_stop):
+        for s in styles:
+            p = os.path.join(out_dir, f"{s}.png")
+            cv2.imwrite(p, 255 - plate)
+            on_done(s, p)
+    jobs = ps.Jobs(str(portal / "runtime"), ["vangogh", "night"], fake_gen)
+    httpd = ps.serve(0, jobs, portal_dir=str(portal))
+    port = httpd.server_address[1]
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        base = f"http://127.0.0.1:{port}"
+        assert json.load(urllib.request.urlopen(f"{base}/api/status"))["server"] is True
+        assert b"portal" in urllib.request.urlopen(f"{base}/index.html").read()
+        png = cv2.imencode(".png", scene)[1].tobytes()
+        req = urllib.request.Request(f"{base}/api/plate", data=png, method="POST", headers={"Content-Type": "image/png"})
+        job = json.load(urllib.request.urlopen(req))["job"]
+        for _ in range(50):
+            st = json.load(urllib.request.urlopen(f"{base}/api/worlds?job={job}"))
+            if len(st["worlds"]) == 2:
+                break
+            time.sleep(0.05)
+        assert [w["style"] for w in st["worlds"]] == ["vangogh", "night"]
+        img = urllib.request.urlopen(base + st["worlds"][0]["url"][1:]).read()
+        assert cv2.imdecode(np.frombuffer(img, np.uint8), cv2.IMREAD_COLOR).shape == scene.shape
+    finally:
+        httpd.shutdown()

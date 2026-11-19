@@ -22,7 +22,7 @@ filmed frame F                  |  a·P + (1−a)·R·S
 ```bash
 pip install -r requirements.txt
 bash scripts/fetch_sample.sh             # stand-in tripod clip: OpenCV's vtest.avi (768x576, 795 frames)
-python -m pytest -q tests                # 23 synthetic tests with exact known answers
+python -m pytest -q tests                # 25 synthetic tests with exact known answers
 python -m crossover.run --video data/sample/vtest.avi --style century --perturb --local-warp --out out/vtest_century
 bash scripts/run_all_sample.sh           # century / night / painting / ink + a moving line (~6 min)
 bash scripts/fetch_depth_model.sh        # Depth Anything V2 Small, ONNX, 99 MB (for --split depth)
@@ -398,6 +398,18 @@ cuts, flashes and hits line up.
   - `*.wav`: the soundtrack.
 - **New `comic` style:** a posterised print with a screen-fixed halftone and ink lines. It works
   pixel by pixel on people too, so it doesn't flicker.
+
+## Live portal kiosk (`portal/`)
+
+The research report's top idea, built. A webcam watches the booth, and anyone who crosses the line,
+steps into the ring or walks under the lens appears in another world, live.
+- **Empty scene:** a masked temporal median.
+- **People:** MediaPipe's selfie segmenter plus a background-difference mask, in the browser.
+- **Composite:** a WebGL2 shader using the same equation as `composite.py`.
+- **Worlds:** six instant shader worlds. `python -m crossover.portal_server` also generates Stable
+  Diffusion worlds from the captured scene, and they appear as they finish.
+- **Setup:** `bash portal/fetch_vendor.sh`, then `python -m crossover.portal_server`, then open
+  http://localhost:8000. Keys, the fallback ladder and setup tips are in `portal/README.md`.
 
 ## Shooting checklist for the real clips
 

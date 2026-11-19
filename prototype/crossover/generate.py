@@ -74,12 +74,25 @@ def control_images(clean_bgr: np.ndarray, disparity: np.ndarray):
     return depth, canny
 
 
-def load_pipeline(threads: int | None = None):
+def pick_device(device: str = "auto") -> str:
+    """'auto' -> CUDA if present, else Apple Silicon (MPS), else CPU."""
+    if device != "auto":
+        return device
+    import torch
+    if torch.cuda.is_available():
+        return "cuda"
+    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+def load_pipeline(threads: int | None = None, device: str = "cpu"):
     import torch
     from diffusers import ControlNetModel, LCMScheduler, StableDiffusionControlNetImg2ImgPipeline
 
     torch.set_num_threads(threads or os.cpu_count() or 4)
-    kw = dict(torch_dtype=torch.float32, variant="fp16")                    # fp16 files, upcast for CPU
+    dtype = torch.float16 if device == "cuda" else torch.float32           # fp16 files, upcast off-GPU
+    kw = dict(torch_dtype=dtype, variant="fp16")
     cns = [ControlNetModel.from_pretrained(CN_DEPTH, **kw), ControlNetModel.from_pretrained(CN_CANNY, **kw)]
     pipe = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(
         BASE, controlnet=cns, safety_checker=None, requires_safety_checker=False, **kw)
@@ -87,7 +100,7 @@ def load_pipeline(threads: int | None = None):
     pipe.load_lora_weights(LCM_LORA)
     pipe.fuse_lora()
     pipe.set_progress_bar_config(disable=True)
-    return pipe
+    return pipe.to(device) if device != "cpu" else pipe
 
 
 def restyle(pipe, clean_bgr: np.ndarray, depth_img, canny_img, prompt: str, seed: int, strength: float,
@@ -112,6 +125,53 @@ def restyle(pipe, clean_bgr: np.ndarray, depth_img, canny_img, prompt: str, seed
     return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
 
+# per-style settings found in the sweeps (README, round 3): Van Gogh needs more strength to paint
+STYLE_PARAMS = {"vangogh": dict(strength=0.95, guidance=2.0, steps=10)}
+DEFAULT_PARAMS = dict(strength=0.8, guidance=1.5, steps=8)
+
+
+def style_prompt(style: str, subject: str | None = None) -> str:
+    """The style's prompt, with 'campus plaza' swapped for another subject (e.g. 'scene')."""
+    p = PROMPTS[style]
+    return p.replace("campus plaza", subject) if subject else p
+
+
+def restyle_plate(plate_bgr: np.ndarray, styles, out_dir: str, pipe=None, disparity=None, device: str = "auto",
+                  max_width: int = 768, seed: int = 0, subject: str | None = "scene", on_done=None,
+                  should_stop=None) -> list[str]:
+    """Generate one world per style for a clean plate (the portal kiosk's on-site step).
+    Works at <= max_width and resizes back to the plate's size. Calls on_done(style, path) as each
+    world finishes; stops early if should_stop() returns True. Returns the written paths."""
+    from .depth import estimate_disparity
+    from .styles import apply_style
+
+    os.makedirs(out_dir, exist_ok=True)
+    h, w = plate_bgr.shape[:2]
+    s = min(1.0, max_width / w)
+    small = cv2.resize(plate_bgr, (int(w * s) // 8 * 8, int(h * s) // 8 * 8), interpolation=cv2.INTER_AREA)
+    if disparity is None:
+        disparity = estimate_disparity(small)
+    disparity = cv2.resize(np.asarray(disparity, np.float32), (small.shape[1], small.shape[0]))
+    depth_img, canny_img = control_images(small, disparity)
+    if pipe is None:
+        pipe = load_pipeline(device=pick_device(device))
+    paths = []
+    for style in styles:
+        if should_stop is not None and should_stop():
+            break
+        prm = {**DEFAULT_PARAMS, **STYLE_PARAMS.get(style, {})}
+        init = apply_style(small, INIT_FILTER[style]) if style in INIT_FILTER else None
+        img = restyle(pipe, small, depth_img, canny_img, style_prompt(style, subject), seed, prm["strength"],
+                      prm["steps"], prm["guidance"], init_bgr=init)
+        img = cv2.resize(img, (w, h), interpolation=cv2.INTER_CUBIC)
+        path = os.path.join(out_dir, f"{style}.png")
+        cv2.imwrite(path, img)
+        paths.append(path)
+        if on_done is not None:
+            on_done(style, path)
+    return paths
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Generative restyles of the clean plate (SD 1.5 + ControlNet, CPU).")
     ap.add_argument("--clean", required=True, help="clean plate PNG")
@@ -124,6 +184,7 @@ def main(argv=None):
     ap.add_argument("--init", choices=["clean", "filter"], default="clean",
                     help="img2img start: the clean plate, or our colour-filter version of it (when one exists)")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--device", default="cpu", help="cpu, cuda, mps or auto")
     ap.add_argument("--skip-existing", action="store_true",
                     help="skip candidates already in meta.json with a PNG on disk (resume after an interruption)")
     a = ap.parse_args(argv)
@@ -136,7 +197,7 @@ def main(argv=None):
     depth_img.save(os.path.join(a.out, "control_depth.png"))
     canny_img.save(os.path.join(a.out, "control_canny.png"))
     t = time.time()
-    pipe = load_pipeline()
+    pipe = load_pipeline(device=pick_device(a.device))
     print(f"[generate] pipeline loaded in {time.time() - t:.0f}s", flush=True)
     meta_path = os.path.join(a.out, "meta.json")
     meta = json.load(open(meta_path)) if os.path.exists(meta_path) else {}
