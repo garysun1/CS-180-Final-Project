@@ -1,17 +1,20 @@
 // End-to-end smoke test of the portal with a fake webcam (Chromium plays a .y4m file as the camera).
 //   python -m crossover.portal_server --no-generate --port 8765 &
-//   node portal/smoke_test.cjs http://localhost:8765/ path/to/clip.y4m out_dir
+//   node portal/smoke_test.cjs http://localhost:8765/ path/to/clip.y4m out_dir [autostart]
+// "autostart" opens ?autostart=1 with the browser's normal autoplay policy and clicks nothing: the page
+// must start on its own, and its sound must wait for a user gesture instead of queueing up.
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
 
 (async () => {
-  const [url, y4m, out] = process.argv.slice(2);
+  const [url, y4m, out, mode] = process.argv.slice(2);
+  const autostart = mode === 'autostart';
   fs.mkdirSync(out, { recursive: true });
   const browser = await chromium.launch({
     args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream',
            `--use-file-for-fake-video-capture=${y4m}`, '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist',
-           '--autoplay-policy=no-user-gesture-required'],
+           ...(autostart ? [] : ['--autoplay-policy=no-user-gesture-required'])],
   });
   const ctx = await browser.newContext({ viewport: { width: 1000, height: 760 }, deviceScaleFactor: 1,
                                          recordVideo: { dir: out, size: { width: 1000, height: 760 } } });
@@ -21,11 +24,12 @@ const path = require('path');
   page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
   const report = { ok: false };
   try {
-    await page.goto(url + '?mirror=0&debug=1', { waitUntil: 'load' });
-    await page.click('#go');
+    await page.goto(url + '?mirror=0&debug=1' + (autostart ? '&autostart=1' : ''), { waitUntil: 'load' });
+    if (!autostart) await page.click('#go');
     const t0 = Date.now();
     await page.waitForFunction(() => window.__portal && window.__portal.state.plate, null, { timeout: 180000 });
     report.secondsToPlate = (Date.now() - t0) / 1000;
+    report.audioBeforeGesture = await page.evaluate(() => window.__portal.audioState());
     await page.waitForTimeout(3000);
     const st = await page.evaluate(() => {
       const s = window.__portal.state;
@@ -58,7 +62,8 @@ const path = require('path');
     report.crossings = await page.evaluate(() => window.__portal.state.crossings);
     report.fpsEnd = await page.evaluate(() => window.__portal.state.fps);
     report.shots = shots;
-    report.ok = errors.length === 0 && report.diffWorldSide > report.diffRealSide * 2;
+    report.ok = errors.length === 0 && report.diffWorldSide > report.diffRealSide * 2 &&
+      (!autostart || report.audioBeforeGesture !== 'running');
   } catch (e) {
     report.error = String(e);
   }

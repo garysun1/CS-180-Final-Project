@@ -5,7 +5,11 @@
 // F camera frame, B clean plate, R the world (a generated image or a shader world computed from B),
 // a person alpha (live mask, holes filled by a plate-difference test near people), P the person in
 // the world's style, Q the plate in that same style (swaps the old background out of soft edges),
-// S shadow ratio near people, w the rule: a line, a ring on the floor, a lens, or everything.
+// S shadow ratio near people, w the rule: a line, a ring on the floor, a lens, a depth split, or all.
+//
+// People entering a generated world get the paper's local colour field (crossover/colormap.py): a
+// smooth grid of 3x4 colour affines fitted from the empty scene to the world, baked per world by
+// scripts/build_portal_artifact.py (or a robust global fit, plate.js, for worlds made on the spot).
 
 const VS = `#version 300 es
 in vec2 aPos;
@@ -13,13 +17,17 @@ void main() { gl_Position = vec4(aPos, 0.0, 1.0); }`;
 
 const FS = `#version 300 es
 precision highp float;
-uniform sampler2D uCam, uMask, uPlate, uWorld, uPW;
+uniform sampler2D uCam, uMask, uPlate, uWorld, uPW, uWorldPrev;
+uniform highp sampler2D uAffT, uFar;
 uniform vec2 uRes;
-uniform int uBg, uPer, uMode;
-uniform mat4 uAff;
+uniform vec4 uVP;
+uniform int uBg, uPer, uMode, uView, uBgPrev, uBurstPer;
+uniform ivec2 uAffN;
 uniform vec2 uP0, uN, uLens;
 uniform vec3 uPortal;
+uniform vec4 uGlitchBox;
 uniform float uSquash, uLensR, uGlitch, uSeed, uFlash, uMirror, uDebug, uHasPlate, uDiff, uGain, uS;
+uniform float uHasFar, uTau, uWave, uWaveOn, uBurst, uBurstEdge;
 out vec4 o;
 
 float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
@@ -50,7 +58,7 @@ vec3 inferno(float t) {
   return clamp(c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6))))), 0.0, 1.0);
 }
 
-// ---- worlds (GLSL ports of crossover/styles.py; RGB order) ----
+// ---- filter worlds (GLSL ports of crossover/styles.py; RGB order) ----
 vec3 nightF(vec3 c, vec2 uv) {
   vec3 f = pow(max(c, 0.0), vec3(1.7)) * 0.55;
   f = 0.55 * f + 0.45 * luma(f);
@@ -81,13 +89,16 @@ float halftone(vec2 px) {
   float u = (px.x + px.y) * 0.70710678, v = (px.x - px.y) * 0.70710678;
   return length(vec2(fract(u / cell) - 0.5, fract(v / cell) - 0.5)) / 0.70710678;
 }
+// Comic: posterize the value only (4 levels) and keep the hue, so grey and noisy pixels stay grey
+// instead of breaking into per-channel colour confetti.
 vec3 comicGrade(vec3 c, vec2 uv) {
   vec3 h = rgb2hsv(c);
   h.y = clamp(h.y * 1.6, 0.0, 1.0);
+  if (h.y < 0.12) h.y = 0.0;
+  h.z = floor(h.z * 3.0 + 0.5) / 3.0;
   vec3 f = hsv2rgb(h);
-  vec3 q = floor(f * 3.0 + 0.5) / 3.0;
   float dots = halftone(uv * uRes) < clamp((1.0 - luma(f)) * 1.15 - 0.15, 0.0, 1.0) ? 1.0 : 0.0;
-  return q * (1.0 - 0.6 * dots) + 0.04;
+  return f * (1.0 - 0.6 * dots) + 0.04;
 }
 vec3 thermalPlate(vec3 c) { return inferno(0.06 + 0.40 * clamp((luma(c) - 0.1) / 0.75, 0.0, 1.0)); }
 vec3 thermalPerson(vec3 c) { return inferno(0.70 + 0.28 * (1.0 - luma(c))); }
@@ -104,8 +115,7 @@ vec2 sobel(vec2 uv, float s) {
   float h = luma(plateAt(uv + t * vec2(0.0, 1.0))), i = luma(plateAt(uv + t * vec2(1.0, 1.0)));
   return vec2((c + 2.0 * f + i) - (a + 2.0 * d + g), (g + 2.0 * h + i) - (a + 2.0 * b + c));
 }
-vec3 worldPlate(int k, vec2 uv) {
-  if (k == 0) return texture(uWorld, uv).rgb;
+vec3 filterPlate(int k, vec2 uv) {
   vec3 B = plateAt(uv);
   if (k == 1) return nightF(B, uv);
   if (k == 2) return centuryF(B, uv);
@@ -118,9 +128,26 @@ vec3 worldPlate(int k, vec2 uv) {
   vec3 col = abs(g1.y) > abs(g1.x) ? vec3(0.25, 0.95, 1.0) : vec3(1.0, 0.2, 0.85);
   return 1.0 - (1.0 - base) * (1.0 - glow * col);
 }
-vec3 person(int k, vec3 c, vec2 uv) {
+vec3 worldPlate(int k, vec2 uv) { return k == 0 ? texture(uWorld, uv).rgb : filterPlate(k, uv); }
+vec3 worldPrev(int k, vec2 uv) { return k == 0 ? texture(uWorldPrev, uv).rgb : filterPlate(k, uv); }
+
+// ---- the local colour field: texel (3i + r, j) holds output row r of grid cell (i, j), as
+// (coefficient of r, of g, of b, offset). Interpolated like cv2.resize INTER_LINEAR (half-pixel
+// centres, edges clamped), which is how crossover/colormap.py expands its grid to every pixel.
+vec4 affRow(int i, int j, int r) { return texelFetch(uAffT, ivec2(3 * i + r, j), 0); }
+void fieldAt(vec2 uv, out vec4 A0, out vec4 A1, out vec4 A2) {
+  vec2 g = vec2(uAffN);
+  vec2 p = clamp(uv * g - 0.5, vec2(0.0), g - 1.0);
+  ivec2 i0 = ivec2(floor(p));
+  ivec2 i1 = min(i0 + 1, uAffN - 1);
+  vec2 f = p - vec2(i0);
+  A0 = mix(mix(affRow(i0.x, i0.y, 0), affRow(i1.x, i0.y, 0), f.x), mix(affRow(i0.x, i1.y, 0), affRow(i1.x, i1.y, 0), f.x), f.y);
+  A1 = mix(mix(affRow(i0.x, i0.y, 1), affRow(i1.x, i0.y, 1), f.x), mix(affRow(i0.x, i1.y, 1), affRow(i1.x, i1.y, 1), f.x), f.y);
+  A2 = mix(mix(affRow(i0.x, i0.y, 2), affRow(i1.x, i0.y, 2), f.x), mix(affRow(i0.x, i1.y, 2), affRow(i1.x, i1.y, 2), f.x), f.y);
+}
+vec3 person(int k, vec3 c, vec2 uv, vec4 A0, vec4 A1, vec4 A2) {
   if (k < 0) return c;
-  if (k == 0) return clamp((uAff * vec4(c, 1.0)).rgb, 0.0, 1.0);
+  if (k == 0) { vec4 x = vec4(c, 1.0); return clamp(vec3(dot(A0, x), dot(A1, x), dot(A2, x)), 0.0, 1.0); }
   if (k == 1) return nightF(c, uv);
   if (k == 2) return centuryF(c, uv);
   if (k == 3) return winterGrade(c);
@@ -131,6 +158,8 @@ vec3 person(int k, vec3 c, vec2 uv) {
 
 // ---- rules: which side of the seam is a pixel on ----
 float ringQ(vec2 px) { return length((px - uPortal.xy) / vec2(uPortal.z, uPortal.z * uSquash)); }
+// farness (0 near .. 1 far) and its gradient magnitude per pixel; without a depth map, lower = nearer
+vec2 farAt(vec2 uv) { return uHasFar > 0.5 ? texture(uFar, uv).rg : vec2(1.0 - uv.y, 1.0 / uRes.y); }
 float modeWeight(vec2 px, float a, vec2 uv) {
   if (uMode == 0) return clamp(0.5 + dot(px - uP0, uN) / (3.0 * uS), 0.0, 1.0);
   if (uMode == 1) {
@@ -138,9 +167,13 @@ float modeWeight(vec2 px, float a, vec2 uv) {
     return a * texture(uPW, uv).r + (1.0 - a) * wb;      // a person changes by where their feet are
   }
   if (uMode == 2) return clamp((uLensR - length(px - uLens)) / (3.0 * uS) + 0.5, 0.0, 1.0);
+  if (uMode == 4) {                                       // everything farther than tau
+    float wb = smoothstep(0.0, 1.0, (farAt(uv).x - uTau) / 0.06 + 0.5);
+    return a * texture(uPW, uv).r + (1.0 - a) * wb;      // people by the depth at their feet
+  }
   return 1.0;
 }
-vec3 seamGlow(vec2 px, float a) {
+vec3 seamGlow(vec2 px, float a, vec2 uv) {
   float g = 0.0;
   if (uMode == 0) {
     float d = dot(px - uP0, uN) / uS;
@@ -151,17 +184,18 @@ vec3 seamGlow(vec2 px, float a) {
   } else if (uMode == 2) {
     float d = (length(px - uLens) - uLensR) / uS;
     g = exp(-(d / 2.5) * (d / 2.5)) * 0.7;
+  } else if (uMode == 4) {
+    vec2 fg = farAt(uv);
+    float d = (fg.x - uTau) / max(fg.y, 1e-4) / uS;        // distance to the contour, in pixels
+    g = exp(-(d / 2.5) * (d / 2.5)) * 0.85 * (1.0 - a);
   }
   return g * vec3(0.75, 0.92, 1.0);
 }
 float maskAt(vec2 uv) { return texture(uMask, uv).r; }
-
-vec3 compose(vec2 uv) {
-  vec2 px = uv * uRes;
-  vec3 F = texture(uCam, uv).rgb;
-  if (uHasPlate < 0.5) return 1.0 - (1.0 - F) * (1.0 - seamGlow(px, 0.0));
-  vec3 B = plateAt(uv) * uGain;
-  float m = maskAt(uv), md = m, mb = 0.0;
+// person alpha: the live mask, with holes filled by a plate-difference test near people
+float alphaAt(vec2 uv, vec3 F, vec3 B, out float md, out float mb) {
+  float m = maskAt(uv);
+  md = m; mb = 0.0;
   for (int i = 0; i < 8; i++) {
     float an = float(i) * 0.7853982;
     vec2 dir = vec2(cos(an), sin(an));
@@ -169,23 +203,87 @@ vec3 compose(vec2 uv) {
     mb += maskAt(uv + dir * vec2(0.035 * uRes.y / uRes.x, 0.035));
   }
   mb /= 8.0;
-  float a = max(m, uDiff * step(0.3, md) * smoothstep(0.12, 0.25, length(F - B)));
+  return max(m, uDiff * step(0.3, md) * smoothstep(0.12, 0.25, length(F - B)));
+}
+// just outside a person's silhouette: the ink outline drawn around the one who crosses
+float edgeAt(vec2 uv) {
+  if (maskAt(uv) > 0.5) return 0.0;
+  vec2 t = 2.5 * uS / uRes;
+  float n = max(max(maskAt(uv + vec2(t.x, 0.0)), maskAt(uv - vec2(t.x, 0.0))),
+                max(maskAt(uv + vec2(0.0, t.y)), maskAt(uv - vec2(0.0, t.y))));
+  return step(0.5, n);
+}
+bool inGlitchBox(vec2 uv) {
+  return uBurst > 0.5 && uv.x >= uGlitchBox.x && uv.y >= uGlitchBox.y && uv.x <= uGlitchBox.z && uv.y <= uGlitchBox.w;
+}
+
+vec3 compose(vec2 uv) {
+  vec2 px = uv * uRes;
+  vec3 F = texture(uCam, uv).rgb;
+  if (uHasPlate < 0.5) return 1.0 - (1.0 - F) * (1.0 - seamGlow(px, 0.0, uv));
+  vec3 B = plateAt(uv) * uGain;
+  float md, mb;
+  float a = alphaAt(uv, F, B, md, mb);
   float dark = clamp((1.0 - luma(F) / (luma(B) + 1e-3) - 0.05) / 0.95, 0.0, 1.0) * (1.0 - step(0.1, md));
   float S = 1.0 - clamp(mb * 2.0, 0.0, 1.0) * dark * 0.9;
+  bool box = inGlitchBox(uv);
+  int per = box ? uBurstPer : uPer;                       // only the one who crosses flashes through styles
+  vec4 A0 = vec4(1.0, 0.0, 0.0, 0.0), A1 = vec4(0.0, 1.0, 0.0, 0.0), A2 = vec4(0.0, 0.0, 1.0, 0.0);
+  if (per == 0) fieldAt(uv, A0, A1, A2);
   vec3 R = worldPlate(uBg, uv);
-  vec3 P = person(uPer, F, uv), Q = person(uPer, B, uv);
+  if (uWaveOn > 0.5) {                                    // the new world rolls in from the horizon
+    float f = farAt(uv).x, t = (f - uWave) / 0.012;
+    R = mix(worldPrev(uBgPrev, uv), R, smoothstep(0.0, 1.0, (f - uWave) / 0.05 + 0.5));
+    R = 1.0 - (1.0 - R) * (1.0 - exp(-t * t) * 0.9 * vec3(1.0, 0.95, 0.85));
+  }
+  vec3 P = person(per, F, uv, A0, A1, A2), Q = person(per, B, uv, A0, A1, A2);
   vec3 rs = a > 0.004 ? P + (1.0 - a) * (R - Q) * S : R * S;
   vec3 c = mix(F, clamp(rs, 0.0, 1.0), modeWeight(px, a, uv));
-  c = 1.0 - (1.0 - c) * (1.0 - seamGlow(px, a));
-  if (uDebug > 0.5) c = mix(c, vec3(1.0, 0.1, 0.1), 0.45 * m);
+  c = 1.0 - (1.0 - c) * (1.0 - seamGlow(px, a, uv));
+  if (box && a < 0.5) {                                   // ink outline; misregistered edges right after a switch
+    if (edgeAt(uv) > 0.5) c = vec3(0.07, 0.06, 0.08);
+    if (uBurstEdge > 0.5) {
+      vec2 sh = vec2(4.0 * uS / uRes.x, 0.0);
+      if (edgeAt(uv - sh) > 0.5) c = vec3(0.0, 1.0, 1.0);
+      else if (edgeAt(uv + sh) > 0.5) c = vec3(1.0, 0.0, 1.0);
+    }
+  }
+  if (uDebug > 0.5) c = mix(c, vec3(1.0, 0.1, 0.1), 0.45 * maskAt(uv));
   return c;
 }
 
+// ---- the Layers view: the pipeline, one layer per tile ----
+vec3 layerView(int v, vec2 uv) {
+  vec2 px = uv * uRes;
+  vec3 F = texture(uCam, uv).rgb;
+  vec3 B = plateAt(uv) * uGain;
+  float md, mb;
+  float a = uHasPlate > 0.5 ? alphaAt(uv, F, B, md, mb) : maskAt(uv);
+  if (v == 1) return mix(F, vec3(1.0, 0.18, 0.15), 0.55 * a);                  // filmed + the mask
+  if (v == 2) return B;                                                        // the empty scene
+  if (v == 3) return worldPlate(uBg, uv);                                      // the one generated image
+  if (v == 4) {                                                                // people, cut out
+    float ch = mod(floor(px.x / (14.0 * uS)) + floor(px.y / (14.0 * uS)), 2.0);
+    return mix(vec3(0.09 + 0.05 * ch), F, a);
+  }
+  if (v == 5) {                                                                // the rule
+    float w = modeWeight(px, a, uv);
+    return mix(vec3(0.04, 0.05, 0.07), vec3(0.42, 0.72, 1.0), w) + seamGlow(px, a, uv);
+  }
+  // 6: the person colour of the empty scene in this world, without gain (colour parity test)
+  vec4 A0 = vec4(1.0, 0.0, 0.0, 0.0), A1 = vec4(0.0, 1.0, 0.0, 0.0), A2 = vec4(0.0, 0.0, 1.0, 0.0);
+  if (uPer == 0) fieldAt(uv, A0, A1, A2);
+  return person(uPer, plateAt(uv), uv, A0, A1, A2);
+}
+
 void main() {
-  vec2 uv = vec2(gl_FragCoord.x / uRes.x, 1.0 - gl_FragCoord.y / uRes.y);
+  vec2 fc = gl_FragCoord.xy - uVP.xy;                     // this tile's pixel (GL: bottom-left origin)
+  vec2 uv = vec2(fc.x / uVP.z, 1.0 - fc.y / uVP.w);
   if (uMirror > 0.5) uv.x = 1.0 - uv.x;
   vec3 c;
-  if (uGlitch > 0.0) {
+  if (uView != 0) {
+    c = layerView(uView, uv);
+  } else if (uGlitch > 0.0) {                             // the manual glitch: the whole frame tears
     float band = floor(uv.y * 36.0);
     if (hash1(band + uSeed) > 1.0 - 0.35 * uGlitch) uv.x += (hash1(band * 1.7 + uSeed * 3.1) - 0.5) * 0.15 * uGlitch;
     float off = 0.008 * uGlitch;
@@ -213,6 +311,8 @@ export class Compositor {
     gl.enableVertexAttribArray(a);
     gl.vertexAttribPointer(a, 2, gl.FLOAT, false, 0, 0);
     this.tex = { cam: this.newTexture(), mask: this.newTexture(), plate: this.newTexture(), pw: this.newTexture() };
+    this.identityField = this.newField(1, 1, IDENTITY_FIELD);
+    this.noFar = this.newFar(1, 1, new Float32Array([0, 0]));
   }
 
   _program(vs, fs) {
@@ -244,6 +344,36 @@ export class Compositor {
     return t;
   }
 
+  // A colour field: gx x gy cells of 3x4 affines (RGB rows; coefficients of r, g, b, then the offset),
+  // as a float texture read with texelFetch only. NEAREST is required: float textures are not
+  // filterable in WebGL2 without an extension, and an incomplete texture would read as black.
+  newField(gx, gy, coeffs) {
+    const gl = this.gl;
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 3 * gx, gy, 0, gl.RGBA, gl.FLOAT, Float32Array.from(coeffs));
+    return { tex: t, gx, gy };
+  }
+
+  // Farness and its gradient magnitude per pixel, as a filterable half-float texture.
+  newFar(w, h, fg) {
+    const gl = this.gl;
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG16F, w, h, 0, gl.RG, gl.FLOAT, fg);
+    return t;
+  }
+
   uploadImage(t, src) {
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, t);
@@ -263,36 +393,54 @@ export class Compositor {
     return this.loc[name];
   }
 
-  draw(p) {
+  // Clear the whole canvas (the Layers view letterboxes its tiles).
+  clear() {
     const gl = this.gl;
+    gl.disable(gl.SCISSOR_TEST);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    gl.clearColor(0.02, 0.025, 0.035, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+  }
+
+  // p.vp = [x, y, w, h] in GL window pixels (bottom-left origin); defaults to the whole canvas.
+  draw(p) {
+    const gl = this.gl, W = this.canvas.width, H = this.canvas.height;
+    const vp = p.vp || [0, 0, W, H];
+    gl.viewport(vp[0], vp[1], vp[2], vp[3]);
     gl.useProgram(this.prog);
     gl.bindVertexArray(this.vao);
+    const field = p.field || this.identityField;
     const units = [['uCam', this.tex.cam], ['uMask', this.tex.mask], ['uPlate', this.tex.plate],
-                   ['uWorld', p.worldTex || this.tex.plate], ['uPW', this.tex.pw]];
+                   ['uWorld', p.worldTex || this.tex.plate], ['uPW', this.tex.pw], ['uAffT', field.tex],
+                   ['uFar', p.farTex || this.noFar], ['uWorldPrev', p.prevTex || this.tex.plate]];
     units.forEach(([name, t], i) => {
       gl.activeTexture(gl.TEXTURE0 + i);
       gl.bindTexture(gl.TEXTURE_2D, t);
       gl.uniform1i(this._u(name), i);
     });
     const f = (n, v) => gl.uniform1f(this._u(n), v);
-    gl.uniform2f(this._u('uRes'), this.canvas.width, this.canvas.height);
-    gl.uniform1i(this._u('uBg'), p.bg);
-    gl.uniform1i(this._u('uPer'), p.per);
-    gl.uniform1i(this._u('uMode'), p.mode);
-    gl.uniformMatrix4fv(this._u('uAff'), false, p.aff);
+    const i1 = (n, v) => gl.uniform1i(this._u(n), v);
+    gl.uniform2f(this._u('uRes'), W, H);
+    gl.uniform4f(this._u('uVP'), vp[0], vp[1], vp[2], vp[3]);
+    i1('uBg', p.bg); i1('uPer', p.per); i1('uMode', p.mode); i1('uView', p.view || 0);
+    i1('uBgPrev', p.prevKind == null ? 1 : p.prevKind); i1('uBurstPer', p.burstPer == null ? -1 : p.burstPer);
+    gl.uniform2i(this._u('uAffN'), field.gx, field.gy);
     gl.uniform2f(this._u('uP0'), p.p0[0], p.p0[1]);
     gl.uniform2f(this._u('uN'), p.n[0], p.n[1]);
     gl.uniform2f(this._u('uLens'), p.lens[0], p.lens[1]);
     gl.uniform3f(this._u('uPortal'), p.portal[0], p.portal[1], p.portal[2]);
+    const box = p.burstBox || [0, 0, 0, 0];
+    gl.uniform4f(this._u('uGlitchBox'), box[0], box[1], box[2], box[3]);
     f('uSquash', p.squash); f('uLensR', p.lensR); f('uGlitch', p.glitch); f('uSeed', p.seed);
     f('uFlash', p.flash); f('uMirror', p.mirror ? 1 : 0); f('uDebug', p.debug ? 1 : 0);
     f('uHasPlate', p.hasPlate ? 1 : 0); f('uDiff', p.diff ? 1 : 0); f('uGain', p.gain);
-    f('uS', this.canvas.width / 768);
+    f('uS', W / 768);
+    f('uHasFar', p.farTex ? 1 : 0); f('uTau', p.tau == null ? 0.5 : p.tau);
+    f('uWaveOn', p.waveOn ? 1 : 0); f('uWave', p.wave == null ? -1 : p.wave);
+    f('uBurst', p.burst ? 1 : 0); f('uBurstEdge', p.burstEdge ? 1 : 0);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
 
-  // mean |output - reference| over a column range of the canvas (tests / diagnostics)
   readPixels() {
     const gl = this.gl, w = this.canvas.width, h = this.canvas.height;
     const px = new Uint8Array(w * h * 4);
@@ -301,4 +449,5 @@ export class Compositor {
   }
 }
 
-export const IDENTITY_AFF = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+// The identity colour transform as a 1x1 field (rows r, g, b): people keep their own colours.
+export const IDENTITY_FIELD = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0];

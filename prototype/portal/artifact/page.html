@@ -38,6 +38,25 @@
   #count { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; text-align: center;
     font: 700 min(16vw, 120px)/1 var(--display); text-shadow: 0 4px 40px #000; }
   #count small { display: block; font: 500 16px/1.3 var(--ui); color: var(--ink); }
+  /* drawn over the canvas by app.js (positions from the canvas rect); none of it takes pointer events */
+  .overlay { position: absolute; left: 0; top: 0; pointer-events: none; }
+  #handle { width: 34px; height: 34px; margin: -17px 0 0 -17px; border-radius: 50%; border: 2px solid var(--seam);
+    background: rgba(8, 12, 18, .35); box-shadow: 0 0 12px rgba(150, 215, 255, .55); }
+  #handle::after { content: ""; position: absolute; inset: -9px; border-radius: 50%; border: 2px solid var(--seam); opacity: 0;
+    animation: ping 1.8s ease-out infinite; }
+  #handle.small { width: 18px; height: 18px; margin: -9px 0 0 -9px; }
+  #handle.small::after { animation: none; }
+  @keyframes ping { from { opacity: .8; transform: scale(.6); } to { opacity: 0; transform: scale(1.35); } }
+  .tag { font: 600 11px/1 var(--ui); letter-spacing: .08em; text-transform: uppercase; white-space: nowrap;
+    padding: 5px 8px; border-radius: 4px; background: rgba(8, 10, 14, .72); color: var(--ink); }
+  #tag-world { color: var(--gen); }
+  #layer-labels { inset: 0; }
+  .layer-label { position: absolute; left: 0; top: 0; padding: 4px 7px; border-radius: 4px; background: rgba(8, 10, 14, .74);
+    font: 600 12px/1.2 var(--ui); color: var(--ink); white-space: nowrap; }
+  .layer-label span { font-weight: 400; color: var(--ink-2); }
+  #sdcard { display: flex; gap: 10px; align-items: center; padding: 0 8px; font-size: 12px; line-height: 1.35; color: var(--ink-2); }
+  #sdcard img { height: 64px; width: auto; border-radius: 3px; border: 1px solid var(--rule); }
+  #sdcard p { margin: 0; max-width: 70ch; }
 
   #controls { display: grid; gap: 8px; min-width: 0; }
   .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; }
@@ -60,6 +79,9 @@
   #worlds .group:first-child { margin-left: 0; }
   #worlds .chip.generated, #worlds .chip.yours { border-color: #5b4a2c; }
   #worlds .chip.generated[aria-pressed="true"], #worlds .chip.yours[aria-pressed="true"] { background: var(--gen); border-color: var(--gen); color: #1a1206; }
+  .chip .key { display: none; margin-right: 6px; font: 600 10px/1 var(--mono); opacity: .6; }
+  @media (pointer: fine) { .chip .key { display: inline; } }
+  #b-layers[aria-pressed="true"] { background: var(--gen); border-color: var(--gen); color: #1a1206; }
 
   footer { font-size: 12px; color: var(--ink-2); max-width: 110ch; }
   footer code { font: 12px var(--mono); color: var(--ink); }
@@ -89,6 +111,15 @@
   <canvas id="view" width="768" height="576" aria-label="The scene, with people crossing into another world"></canvas>
   <div class="hud">Cross the Line<small id="hudsub">Loading the plaza…</small></div>
   <div id="notice"><b>●</b> Recorded clip · runs entirely in your browser</div>
+  <div id="handle" class="overlay" hidden></div>
+  <div id="tag-real" class="overlay tag" hidden>Filmed</div>
+  <div id="tag-world" class="overlay tag" hidden>World</div>
+  <div id="layer-labels" class="overlay" hidden></div>
+  <div id="sdcard" class="overlay" hidden>
+    <img class="sd-depth" alt="Depth map of the empty scene, as given to Stable Diffusion">
+    <img class="sd-canny" alt="Edge map of the empty scene, as given to Stable Diffusion">
+    <p class="sd-text"></p>
+  </div>
   <div id="toast" role="status" aria-live="polite"></div>
   <div id="count" hidden></div>
 </div>
@@ -101,8 +132,10 @@
       <button type="button" data-mode="0" aria-pressed="true">Line</button>
       <button type="button" data-mode="1" aria-pressed="false">Portal</button>
       <button type="button" data-mode="2" aria-pressed="false">Lens</button>
+      <button type="button" data-mode="4" aria-pressed="false">Depth</button>
       <button type="button" data-mode="3" aria-pressed="false">Whole</button>
     </div>
+    <button type="button" id="b-layers" aria-pressed="false">Layers</button>
     <button type="button" id="b-glitch">Glitch</button>
     <button type="button" id="b-cycle" aria-pressed="false">Auto-cycle</button>
     <button type="button" id="b-sound" aria-pressed="false">Sound off</button>
@@ -115,8 +148,9 @@
   <div id="worlds" role="group" aria-label="World"></div>
 </div>
 
-<footer>Drag the line across the picture and watch people walk into another world. This runs the kiosk's own code on recorded
-  clips; the live-camera version runs on a laptop with <code>python -m crossover.portal_server</code>.
+<footer>Drag the line across the picture and watch people walk into another world. <b>Layers</b> takes the picture apart;
+  <b>Depth</b> turns everything farther than the spot you tap into the other world. This runs the kiosk's own code on
+  recorded clips; the live-camera version runs on a laptop with <code>python -m crossover.portal_server</code>.
   Method and trailer: <a href="https://claude.ai/artifact/BZs9iGmSYMXA7z81XCxDnf" target="_blank" rel="noopener">Cross the Line</a>.</footer>
 
 <div id="help" hidden>
@@ -125,11 +159,16 @@
     <p>Each scene is a fixed camera. The page knows the empty scene, so anyone who differs from it is a person. People
       are cut out every frame and shown in the other world wherever the rule says so.</p>
     <dl class="keys">
-      <dt>Drag the picture</dt><dd>move the line or the portal ring; the lens follows the pointer</dd>
-      <dt>Scroll</dt><dd>resize the ring or the lens</dd>
-      <dt><kbd>1</kbd>–<kbd>9</kbd> <kbd>N</kbd></dt><dd>choose a world, next world; <kbd>Space</kbd> auto-cycles</dd>
-      <dt><kbd>M</kbd></dt><dd>rule: line (split at the line), portal (each person changes by where they stand), lens, whole frame</dd>
-      <dt><kbd>G</kbd> <kbd>X</kbd></dt><dd>glitch burst; auto-glitch on every crossing</dd>
+      <dt>Drag the picture</dt><dd>move the line or the portal ring; the lens follows the pointer; in Depth, the contour
+        goes to the distance you point at</dd>
+      <dt>Scroll</dt><dd>resize the ring or the lens; move the depth contour</dd>
+      <dt><kbd>1</kbd>–<kbd>9</kbd> <kbd>N</kbd></dt><dd>choose a world, next world (a new world rolls in from the horizon);
+        <kbd>Space</kbd> auto-cycles</dd>
+      <dt><kbd>M</kbd></dt><dd>rule: line (split at the line), portal (each person changes by where they stand), lens,
+        depth (everything farther than a distance), whole frame</dd>
+      <dt><kbd>L</kbd></dt><dd>Layers: the filmed frame and its person mask, the empty scene, the one generated image,
+        the people cut out, the rule, and the result. Tap a tile to see it full size.</dd>
+      <dt><kbd>G</kbd> <kbd>X</kbd></dt><dd>glitch the whole frame; turn off the glitch that hits whoever crosses</dd>
       <dt><kbd>[</kbd> <kbd>]</kbd> <kbd>←</kbd> <kbd>→</kbd></dt><dd>tilt or move the line</dd>
       <dt><kbd>S</kbd> <kbd>F</kbd> <kbd>D</kbd></dt><dd>sound, full screen, debug view (mask and timings)</dd>
       <dt>Your video</dt><dd>use a clip from a fixed camera. The empty scene is the per-pixel median of its first frames, so

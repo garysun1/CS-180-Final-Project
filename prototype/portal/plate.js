@@ -46,36 +46,58 @@ export class PlateCapture {
   }
 }
 
-// Least-squares colour affine world ~ A [plate, 1], fitted on random pixels. People are then shown
-// in the world's light by the same transform; it is fixed per world, so it cannot flicker.
-// Returns a column-major mat4 for the shader.
-export function fitAffine(plate, world, samples = 4000) {
+// Colour for people in a world made on the spot (a dropped image, a kiosk world from the server):
+// one robust colour affine  world ~ A [plate, 1], a port of the global fit in crossover/colormap.py.
+// A ridge pulls it toward the identity (lam = 0.02 n), and Cauchy re-weighting (c = 0.08, 4 rounds)
+// stops pixels whose content changed (snow over grass, painted strokes) from pulling the fit, so
+// people keep their own contrast instead of collapsing into the world's average colour. Worlds
+// built offline carry the full local field instead (scripts/build_portal_artifact.py).
+// Returns a 1x1 colour field: rows r, g, b of (coefficients of r, g, b, offset), blended toward the
+// identity by `strength` as the paper does (LocalAffineColor(strength=0.9)).
+export function fitColourField(plate, world, samples = 4000, strength = 0.9) {
   const n = plate.width * plate.height, p = plate.data, q = world.data;
-  const XtX = Array.from({ length: 4 }, () => new Float64Array(4));
-  const XtY = Array.from({ length: 3 }, () => new Float64Array(4));
+  const X = [], Y = [];
   let seed = 12345;
   const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
   for (let s = 0; s < samples; s++) {
     const i = Math.floor(rnd() * n) * 4;
-    const x = [p[i] / 255, p[i + 1] / 255, p[i + 2] / 255, 1];
-    const y = [q[i] / 255, q[i + 1] / 255, q[i + 2] / 255];
-    for (let a = 0; a < 4; a++) {
-      for (let b = 0; b < 4; b++) XtX[a][b] += x[a] * x[b];
-      for (let c = 0; c < 3; c++) XtY[c][a] += x[a] * y[c];
+    X.push([p[i] / 255, p[i + 1] / 255, p[i + 2] / 255, 1]);
+    Y.push([q[i] / 255, q[i + 1] / 255, q[i + 2] / 255]);
+  }
+  const prior = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]];
+  const lam = 0.02 * samples, c2 = 0.08 * 0.08;
+  const w = new Float64Array(samples).fill(1);
+  let A = prior;
+  for (let it = 0; it < 4; it++) {
+    A = solveWeighted(X, Y, w, prior, lam);
+    for (let s = 0; s < samples; s++) {
+      const x = X[s];
+      let r2 = 0;
+      for (let k = 0; k < 3; k++) {
+        const d = Y[s][k] - (A[k][0] * x[0] + A[k][1] * x[1] + A[k][2] * x[2] + A[k][3]);
+        r2 += d * d;
+      }
+      w[s] = 1 / (1 + r2 / c2);
     }
   }
-  const lam = 1e-3 * samples;
-  const A = [];
-  for (let c = 0; c < 3; c++) {
-    const M = XtX.map((row, a) => row.map((v, b) => v + (a === b ? lam : 0)));
-    const rhs = Array.from(XtY[c]);
-    rhs[c] += lam;                                       // ridge toward identity
-    A.push(solve4(M, rhs));
+  const out = [];
+  for (let k = 0; k < 3; k++) for (let j = 0; j < 4; j++) out.push(strength * A[k][j] + (1 - strength) * prior[k][j]);
+  return out;
+}
+
+// argmin_A sum_s w_s |Y_s - A X_s|^2 + lam |A - prior|^2, solved row by row (A is 3x4).
+function solveWeighted(X, Y, w, prior, lam) {
+  const M = Array.from({ length: 4 }, () => new Float64Array(4));
+  const R = Array.from({ length: 3 }, () => new Float64Array(4));
+  for (let s = 0; s < X.length; s++) {
+    const x = X[s], ws = w[s];
+    for (let a = 0; a < 4; a++) {
+      for (let b = 0; b < 4; b++) M[a][b] += ws * x[a] * x[b];
+      for (let k = 0; k < 3; k++) R[k][a] += ws * x[a] * Y[s][k];
+    }
   }
-  const m = new Float32Array(16);
-  for (let col = 0; col < 4; col++) for (let row = 0; row < 3; row++) m[col * 4 + row] = A[row][col];
-  m[15] = 1;
-  return m;
+  for (let a = 0; a < 4; a++) M[a][a] += lam;
+  return [0, 1, 2].map((k) => solve4(M.map((row) => Array.from(row)), R[k].map((v, a) => v + lam * prior[k][a])));
 }
 
 function solve4(M, b) {

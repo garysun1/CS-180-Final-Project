@@ -270,6 +270,22 @@ def test_colormap_ignores_content_swaps(scene):
     assert np.array_equal(lac.apply(scene), lac.apply(scene))   # deterministic
 
 
+def test_colour_field_export_matches_apply(scene):
+    """The RGB grid the portal shader uses, interpolated with half-pixel centres (as its texelFetch
+    code does), must reproduce the Python mapping applied to a new image (people) within a level."""
+    gain, off = _affine_field(H, W)
+    R = to_uint8(np.clip(to_float(scene) * gain + off, 0, 1))
+    lac = LocalAffineColor(strength=0.9).fit(scene, R)
+    g = lac.export_rgb()                                            # (gy, gx, 3, 4), strength baked in
+    assert g.shape == (lac.gy, lac.gx, 3, 4)
+    field = cv2.resize(g.reshape(lac.gy, lac.gx, 12), (W, H), interpolation=cv2.INTER_LINEAR).reshape(H, W, 3, 4)
+    f = walkers(scene)[0][5]
+    rgb = to_float(f)[..., ::-1]
+    got = np.clip((field[..., :3] * rgb[..., None, :]).sum(-1) + field[..., 3], 0, 1)
+    want = to_float(lac.apply(f))[..., ::-1]                        # the Python mapping, in RGB
+    assert np.abs(to_uint8(got).astype(int) - to_uint8(want).astype(int)).max() <= 1
+
+
 # ------------------------------------------------------------------ seam-free effects
 from crossover.effects import feet, trail_step  # noqa: E402
 

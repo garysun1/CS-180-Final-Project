@@ -33,11 +33,16 @@
   .keys { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; text-align: left; font-size: 14px; color: var(--ink-2); }
   .keys kbd { font: 600 13px ui-monospace, Menlo, monospace; color: var(--ink); background: #1b212b; border: 1px solid #2b3442;
     border-radius: 5px; padding: 1px 7px; }
+  .overlay { position: absolute; left: 0; top: 0; pointer-events: none; }
+  #layer-labels { inset: 0; }
+  .layer-label { position: absolute; left: 0; top: 0; padding: 4px 7px; border-radius: 4px; background: rgba(8, 10, 14, .74);
+    font: 600 13px/1.2 system-ui, sans-serif; color: var(--ink); white-space: nowrap; }
+  .layer-label span { font-weight: 400; color: var(--ink-2); }
   [hidden] { display: none !important; }
 </style>
 </head>
 <body>
-<div id="stage"><canvas id="view" width="640" height="480"></canvas></div>
+<div id="stage"><canvas id="view" width="640" height="480"></canvas><div id="layer-labels" class="overlay" hidden></div></div>
 <div class="hud" id="hud">Cross the Line<small id="hudsub"></small></div>
 <div id="notice"><b>●</b> Live camera · nothing is recorded</div>
 <div id="toast"></div>
@@ -58,11 +63,12 @@
     <h2 style="margin-top: 0">Controls</h2>
     <div class="keys">
       <kbd>1</kbd><span>–<kbd>9</kbd> choose a world (<kbd>N</kbd> next, <kbd>Space</kbd> auto-cycle)</span>
-      <kbd>M</kbd><span>rule: line, portal ring, lens, whole frame</span>
+      <kbd>M</kbd><span>rule: line, portal ring, lens, depth (tap: everything farther changes), whole frame</span>
+      <kbd>L</kbd><span>Layers: filmed + mask, empty scene, the world, people, the rule, the result (tap a tile)</span>
       <kbd>drag</kbd><span>move the line or ring; the lens follows the pointer; scroll to resize</span>
       <kbd>[ ]</kbd><span>tilt the line; <kbd>←</kbd> <kbd>→</kbd> move it</span>
       <kbd>C</kbd><span>recapture the empty scene (people may stay; they are masked out)</span>
-      <kbd>G</kbd><span>glitch burst; <kbd>X</kbd> auto-glitch on every crossing</span>
+      <kbd>G</kbd><span>glitch the whole frame; <kbd>X</kbd> the glitch that hits whoever crosses, on or off</span>
       <kbd>B</kbd><span>switch between camera and the recorded fallback clip</span>
       <kbd>R</kbd><span>mirror · <kbd>F</kbd> fullscreen · <kbd>S</kbd> sound · <kbd>D</kbd> debug · <kbd>T</kbd> hole filling</span>
       <kbd>drop</kbd><span>drop an image of this exact view to add it as a world</span>

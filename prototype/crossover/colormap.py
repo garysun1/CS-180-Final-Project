@@ -40,6 +40,7 @@ class LocalAffineColor:
         self.lam, self.c, self.cg, self.iters, self.smooth = lam, cauchy, cauchy_global, iters, smooth
         self.samples, self.strength, self.seed = samples, strength, seed
         self.field: np.ndarray | None = None      # (H, W, 3, 4)
+        self.grid: np.ndarray | None = None       # (gy, gx, 12), the smoothed tiles the field is resized from
         self.A_global: np.ndarray | None = None
         self._fit_psnr: float | None = None
         self._explained: float | None = None
@@ -88,11 +89,21 @@ class LocalAffineColor:
         if self.smooth > 0:
             for c in range(12):
                 grid[..., c] = cv2.GaussianBlur(grid[..., c], (0, 0), self.smooth, borderType=cv2.BORDER_REPLICATE)
+        self.grid = grid.copy()
         self.field = cv2.resize(grid, (W, H), interpolation=cv2.INTER_LINEAR).reshape(H, W, 3, 4)
         pred = self.apply_float(Bf, strength=1.0)
         self._fit_psnr = psnr(R, to_uint8(pred))
         self._explained = float((np.linalg.norm(pred - Rf, axis=2) < 0.1).mean())
         return self
+
+    def export_rgb(self, strength: float | None = None) -> np.ndarray:
+        """The tile grid for a renderer working in RGB, with the strength blend baked in:
+        (gy, gx, 3, 4), rows = output R, G, B, columns = coefficients of R, G, B and the offset.
+        Interpolated with half-pixel centres (as cv2.resize does), it reproduces apply()."""
+        s = self.strength if strength is None else strength
+        g = self.grid.reshape(self.gy, self.gx, 3, 4)[:, :, ::-1, :][..., [2, 1, 0, 3]]   # BGR -> RGB
+        ident = np.hstack([np.eye(3), np.zeros((3, 1))]).astype(np.float32)
+        return (s * g + (1 - s) * ident).astype(np.float32)
 
     def apply_float(self, Ff: np.ndarray, strength: float | None = None) -> np.ndarray:
         s = self.strength if strength is None else strength

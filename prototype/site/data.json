@@ -1,0 +1,378 @@
+{
+ "rows": [
+  {
+   "id": "century",
+   "style": "century",
+   "split": "line",
+   "method": "sift+local",
+   "sift_inliers": 1281,
+   "seam_before": 3.73,
+   "seam_before_p90": 6.33,
+   "seam_global": 0.9,
+   "seam_local": 0.13,
+   "seam_final": 0.13,
+   "seam_final_p90": 0.24,
+   "true_before": 3.85,
+   "true_final": 0.17,
+   "true_final_p90": 0.23,
+   "local_kept": true,
+   "notes": [
+    "local warp kept (band edge NCC 0.865 -> 0.940)"
+   ]
+  },
+  {
+   "id": "night",
+   "style": "night",
+   "split": "line",
+   "method": "sift+local",
+   "sift_inliers": 1053,
+   "seam_before": 3.63,
+   "seam_before_p90": 6.24,
+   "seam_global": 0.73,
+   "seam_local": 0.16,
+   "seam_final": 0.16,
+   "seam_final_p90": 0.3,
+   "true_before": 3.85,
+   "true_final": 0.13,
+   "true_final_p90": 0.21,
+   "local_kept": true,
+   "notes": [
+    "local warp kept (band edge NCC 0.859 -> 0.924)"
+   ]
+  },
+  {
+   "id": "painting",
+   "style": "painting",
+   "split": "line",
+   "method": "sift+local",
+   "sift_inliers": 339,
+   "seam_before": 3.18,
+   "seam_before_p90": 5.98,
+   "seam_global": 0.85,
+   "seam_local": 0.47,
+   "seam_final": 0.47,
+   "seam_final_p90": 1.04,
+   "true_before": 3.85,
+   "true_final": 0.51,
+   "true_final_p90": 1.09,
+   "local_kept": true,
+   "notes": [
+    "local warp kept (band edge NCC 0.782 -> 0.833)"
+   ]
+  },
+  {
+   "id": "ink",
+   "style": "ink",
+   "split": "line",
+   "method": "ecc(init=identity)",
+   "sift_inliers": 8,
+   "seam_before": 3.73,
+   "seam_before_p90": 9.04,
+   "seam_global": 2.33,
+   "seam_local": null,
+   "seam_final": 2.33,
+   "seam_final_p90": 7.42,
+   "true_before": 3.85,
+   "true_final": 1.26,
+   "true_final_p90": 1.57,
+   "local_kept": false,
+   "notes": [
+    "SIFT homography implausible (corner shift 854.8px); discarded",
+    "SIFT inliers 8 < 60: falling back to ECC",
+    "local warp rejected (band edge NCC 0.422 -> 0.468)"
+   ]
+  },
+  {
+   "id": "winter",
+   "style": "winter",
+   "split": "line",
+   "method": "sift+local",
+   "sift_inliers": 1293,
+   "seam_before": 3.97,
+   "seam_before_p90": 6.25,
+   "seam_global": 1.02,
+   "seam_local": 0.53,
+   "seam_final": 0.53,
+   "seam_final_p90": 0.77,
+   "true_before": 3.85,
+   "true_final": 0.25,
+   "true_final_p90": 0.84,
+   "local_kept": true,
+   "notes": [
+    "local warp kept (band edge NCC 0.694 -> 0.749)"
+   ]
+  },
+  {
+   "id": "underwater",
+   "style": "underwater",
+   "split": "line",
+   "method": "sift+local",
+   "sift_inliers": 1073,
+   "seam_before": 3.64,
+   "seam_before_p90": 6.19,
+   "seam_global": 0.76,
+   "seam_local": 0.14,
+   "seam_final": 0.14,
+   "seam_final_p90": 0.21,
+   "true_before": 3.85,
+   "true_final": 0.14,
+   "true_final_p90": 0.19,
+   "local_kept": true,
+   "notes": [
+    "local warp kept (band edge NCC 0.868 -> 0.946)"
+   ]
+  },
+  {
+   "id": "thermal",
+   "style": "thermal",
+   "split": "line",
+   "method": "sift+local",
+   "sift_inliers": 738,
+   "seam_before": 3.79,
+   "seam_before_p90": 6.19,
+   "seam_global": 0.84,
+   "seam_local": 0.15,
+   "seam_final": 0.15,
+   "seam_final_p90": 0.27,
+   "true_before": 3.85,
+   "true_final": 0.13,
+   "true_final_p90": 0.23,
+   "local_kept": true,
+   "notes": [
+    "local warp kept (band edge NCC 0.856 -> 0.927)"
+   ]
+  },
+  {
+   "id": "neon",
+   "style": "neon",
+   "split": "line",
+   "method": "sift",
+   "sift_inliers": 173,
+   "seam_before": 2.69,
+   "seam_before_p90": 10.45,
+   "seam_global": 1.24,
+   "seam_local": null,
+   "seam_final": 1.24,
+   "seam_final_p90": 3.27,
+   "true_before": 3.85,
+   "true_final": 1.1,
+   "true_final_p90": 2.01,
+   "local_kept": false,
+   "notes": [
+    "local warp rejected (band edge NCC 0.368 -> 0.394)"
+   ]
+  },
+  {
+   "id": "sketch",
+   "style": "sketch",
+   "split": "line",
+   "method": "sift+local",
+   "sift_inliers": 775,
+   "seam_before": 3.47,
+   "seam_before_p90": 6.14,
+   "seam_global": 0.65,
+   "seam_local": 0.26,
+   "seam_final": 0.26,
+   "seam_final_p90": 0.42,
+   "true_before": 3.85,
+   "true_final": 0.12,
+   "true_final_p90": 0.42,
+   "local_kept": true,
+   "notes": [
+    "local warp kept (band edge NCC 0.659 -> 0.748)"
+   ]
+  },
+  {
+   "id": "depth_century",
+   "style": "century",
+   "split": "depth",
+   "method": "sift+local",
+   "sift_inliers": 1281,
+   "seam_before": 5.28,
+   "seam_before_p90": 6.79,
+   "seam_global": 0.86,
+   "seam_local": 0.15,
+   "seam_final": 0.15,
+   "seam_final_p90": 0.23,
+   "true_before": 5.19,
+   "true_final": 0.17,
+   "true_final_p90": 0.29,
+   "local_kept": true,
+   "notes": [
+    "local warp kept (band edge NCC 0.897 -> 0.948)"
+   ]
+  }
+ ],
+ "sd": [
+  {
+   "id": "sd_winter",
+   "style": "winter",
+   "pick": "winterf_s0_k75",
+   "init": "filter",
+   "init_filter": "winter",
+   "strength": 0.75,
+   "seconds": 80,
+   "kept_unwarped": true,
+   "sift_inliers": 14,
+   "notes": [
+    "SIFT inliers 14 < 60: falling back to ECC",
+    "global estimate rejected: edge NCC 0.526 unwarped vs 0.529 warped",
+    "local warp rejected (band edge NCC 0.511 -> 0.487)"
+   ],
+   "seam_measured": 1.13,
+   "explained": 0.189,
+   "fit_psnr": 8.19,
+   "prompt": "the same campus plaza after heavy snowfall, thick white snow covering the grass lawns, the rooftops and the cars, snowy pavement with footprints, overcast winter day, photograph, realistic"
+  },
+  {
+   "id": "sd_night",
+   "style": "night",
+   "pick": "nightf_s0_k80",
+   "init": "filter",
+   "init_filter": "night",
+   "strength": 0.8,
+   "seconds": 90,
+   "kept_unwarped": true,
+   "sift_inliers": 8,
+   "notes": [
+    "SIFT inliers 8 < 60: falling back to ECC",
+    "global estimate rejected: edge NCC 0.540 unwarped vs 0.542 warped",
+    "local warp rejected (band edge NCC 0.583 -> 0.564)"
+   ],
+   "seam_measured": 0.64,
+   "explained": 0.687,
+   "fit_psnr": 20.66,
+   "prompt": "the same campus plaza at night, street lamp switched on with a warm glow, lit office windows, wet pavement reflecting the lights, dark blue night sky, photograph, realistic"
+  },
+  {
+   "id": "sd_1920s",
+   "style": "1920s",
+   "pick": "1920sf_s0_k80",
+   "init": "filter",
+   "init_filter": "century",
+   "strength": 0.8,
+   "seconds": 92,
+   "kept_unwarped": true,
+   "sift_inliers": 10,
+   "notes": [
+    "SIFT homography implausible (corner shift 801.4px); discarded",
+    "SIFT inliers 10 < 60: falling back to ECC",
+    "global estimate rejected: edge NCC 0.495 unwarped vs 0.498 warped",
+    "local warp rejected (band edge NCC 0.499 -> 0.501)"
+   ],
+   "seam_measured": 0.33,
+   "explained": 0.53,
+   "fit_psnr": 17.81,
+   "prompt": "the same campus plaza photographed in 1920, antique sepia photograph, cobblestone pavement, old brick buildings, period street lamp, film grain, scratches"
+  },
+  {
+   "id": "sd_autumn",
+   "style": "autumn",
+   "pick": "autumnf_s0_k80",
+   "init": "filter",
+   "init_filter": "autumn",
+   "strength": 0.8,
+   "seconds": 97,
+   "kept_unwarped": true,
+   "sift_inliers": 18,
+   "notes": [
+    "SIFT inliers 18 < 60: falling back to ECC",
+    "global estimate rejected: edge NCC 0.504 unwarped vs 0.502 warped",
+    "local warp rejected (band edge NCC 0.530 -> 0.533)"
+   ],
+   "seam_measured": 1.35,
+   "explained": 0.476,
+   "fit_psnr": 17.28,
+   "prompt": "the same campus plaza in autumn, orange and red leaves covering the lawns, autumn trees, golden hour sunlight, long shadows, photograph, realistic"
+  },
+  {
+   "id": "sd_underwater",
+   "style": "underwater",
+   "pick": "underwaterf_s0_k80",
+   "init": "filter",
+   "init_filter": "underwater",
+   "strength": 0.8,
+   "seconds": 93,
+   "kept_unwarped": true,
+   "sift_inliers": 9,
+   "notes": [
+    "SIFT inliers 9 < 60: falling back to ECC",
+    "global estimate rejected: edge NCC 0.481 unwarped vs 0.487 warped",
+    "local warp rejected (band edge NCC 0.491 -> 0.485)"
+   ],
+   "seam_measured": 0.93,
+   "explained": 0.571,
+   "fit_psnr": 19.86,
+   "prompt": "the same campus plaza deep under the sea, sunken, seaweed and coral growing on the ground, blue-green water, light rays from above, fish swimming"
+  },
+  {
+   "id": "sd_vangogh",
+   "style": "vangogh",
+   "pick": "vangoghf_s0_k95",
+   "init": "filter",
+   "init_filter": "painting",
+   "strength": 0.95,
+   "seconds": 127,
+   "kept_unwarped": true,
+   "sift_inliers": 9,
+   "notes": [
+    "SIFT homography implausible (corner shift 811.9px); discarded",
+    "SIFT inliers 9 < 60: falling back to ECC",
+    "global estimate rejected: edge NCC 0.377 unwarped vs 0.378 warped",
+    "local warp rejected (band edge NCC 0.411 -> 0.351)"
+   ],
+   "seam_measured": 2.3,
+   "explained": 0.036,
+   "fit_psnr": 12.89,
+   "prompt": "the same campus plaza as a Vincent van Gogh oil painting, swirling thick impasto brush strokes, starry night style, vivid blue and yellow"
+  },
+  {
+   "id": "sd_cyberpunk",
+   "style": "cyberpunk",
+   "pick": "cyberpunkf_s0_k85",
+   "init": "filter",
+   "init_filter": "neon",
+   "strength": 0.85,
+   "seconds": 149,
+   "kept_unwarped": true,
+   "sift_inliers": 6,
+   "notes": [
+    "SIFT homography implausible (corner shift 627.8px); discarded",
+    "SIFT inliers 6 < 60: falling back to ECC",
+    "global estimate rejected: edge NCC 0.541 unwarped vs 0.542 warped",
+    "local warp rejected (band edge NCC 0.513 -> 0.489)"
+   ],
+   "seam_measured": 0.94,
+   "explained": 0.529,
+   "fit_psnr": 17.39,
+   "prompt": "the same campus plaza as a cyberpunk city at night, glowing pink and cyan neon signs, holographic billboards on the buildings, wet reflective pavement, rain, cinematic"
+  }
+ ],
+ "night_filter_explained": 0.98,
+ "roundtrip": {
+  "psnr_shadow": 35.09,
+  "psnr_noshadow": 34.88,
+  "mae_inside_shadow": 1.43,
+  "mae_inside_noshadow": 1.43,
+  "mae_ring_shadow": 4.38,
+  "mae_ring_noshadow": 4.76,
+  "mae_outside_shadow": 2.66,
+  "mae_outside_noshadow": 2.71,
+  "n_frames": 159.0
+ },
+ "depth": {
+  "r": 0.8,
+  "n": 4154,
+  "flicker_raw": 0.0163,
+  "flicker_ema": 0.0138,
+  "tau": 0.5551,
+  "band": 0.08
+ },
+ "frames": {
+  "n": 795,
+  "fps": 10,
+  "w": 768,
+  "h": 576,
+  "showcase": 530
+ }
+}
