@@ -1,10 +1,15 @@
 // Cross the Line — live portal kiosk. See README.md.
+// The same code runs the local kiosk (index.html: camera, server, segmenter) and the hosted demo
+// (artifact/page.html: recorded scenes with pre-made worlds), configured by window.PORTAL_CONFIG.
 import { Compositor, IDENTITY_AFF } from './compositor.js';
-import { createSegmenter, segmentFrame } from './segment.js';
 import { PlateCapture, fitAffine, toImageData } from './plate.js';
 import { PortalAudio } from './audio.js';
 
 const params = new URLSearchParams(location.search);
+const CFG = Object.assign({
+  camera: true, server: true, segmenter: true, muted: false, autostart: params.get('autostart') === '1',
+  scenes: null, startScene: 0,
+}, window.PORTAL_CONFIG || {});
 const $ = (id) => document.getElementById(id);
 const canvas = $('view');
 const MODES = ['line', 'portal', 'lens', 'whole frame'];
@@ -12,18 +17,20 @@ const SHADER_WORLDS = [
   { name: 'Night', kind: 1 }, { name: '1920s', kind: 2 }, { name: 'Winter', kind: 3 },
   { name: 'Comic', kind: 4 }, { name: 'Thermal', kind: 5 }, { name: 'Neon', kind: 6 },
 ];
+const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 const S = {
   worlds: SHADER_WORLDS.map((w) => ({ ...w })), world: 0, mode: Math.max(0, MODES.indexOf(params.get('mode') || 'line')),
   mirror: params.get('mirror') !== '0', debug: params.get('debug') === '1', diff: true,
-  glitchUntil: 0, autoGlitch: true, autoCycle: false, lastCycle: 0, flash: 0, muted: false,
+  glitchUntil: 0, autoGlitch: !REDUCED, autoCycle: false, lastCycle: 0, flash: 0, muted: !!CFG.muted,
   line: { x: 0.5, y: 0.5, angle: 0 }, portal: { x: 0.5, y: 0.78, r: 0.17 }, lens: { x: 0.5, y: 0.5, r: 0.2 },
-  source: params.get('source') === 'clip' ? 'clip' : 'camera', video: null,
+  source: params.get('source') === 'clip' || !CFG.camera ? 'clip' : 'camera', video: null,
   plate: null, plateData: null, capture: null, gain: 1,
   mask: null, segMs: 0, delegate: '', fps: 0, frames: 0, lastFpsT: performance.now(),
   tracks: [], across: 0, crossings: 0, server: false, job: null, loaded: new Set(), log: [],
+  scenes: [], scene: -1,
 };
-let comp, seg, audio;
+let comp, seg = null, segmentFrame = null, audio;
 const work = document.createElement('canvas');
 const wctx = work.getContext('2d', { willReadFrequently: true });
 
@@ -33,6 +40,7 @@ function toast(msg, ms = 2600) {
   const t = $('toast'); t.textContent = msg; t.classList.add('on');
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('on'), ms);
 }
+function flash(v) { if (!REDUCED) S.flash = Math.max(S.flash, v); }
 
 // ------------------------------------------------------------------ sources
 async function startCamera() {
@@ -43,15 +51,19 @@ async function startCamera() {
   await v.play();
   return v;
 }
-async function startClip() {
+async function startClip(src) {
   const v = $('clip');
-  if (!v.src) v.src = params.get('clip') || './clips/fallback.mp4';
+  if (src) {
+    if (v.src.startsWith('blob:') && v.src !== src) URL.revokeObjectURL(v.src);
+    v.src = src;
+  } else if (!v.src) v.src = params.get('clip') || './clips/fallback.mp4';
   await v.play();
   return v;
 }
-async function useSource(name) {
+// opts.src: clip URL; opts.plate: a ready empty scene (ImageBitmap) instead of capturing one
+async function useSource(name, opts = {}) {
   try {
-    S.video = name === 'camera' ? await startCamera() : await startClip();
+    S.video = name === 'camera' ? await startCamera() : await startClip(opts.src);
     S.source = name;
   } catch (e) {
     if (name === 'camera') { toast('No camera available, using the recorded clip'); log(`camera: ${e}`); return useSource('clip'); }
@@ -62,17 +74,20 @@ async function useSource(name) {
   work.width = w; work.height = h;
   S.mirror = name === 'camera' ? params.get('mirror') !== '0' : false;
   fitCanvas();
-  S.plate = null; S.tracks = [];
-  S.mask = null;
-  scheduleSegmentation();
-  capturePlate(name === 'camera' ? 3 : 0);
+  S.plate = null; S.plateData = null; S.plateSmall = null; S.capture = null; S.gain = 1;
+  S.tracks = []; S.mask = null;
+  scheduleSegmentation(true);
+  if (opts.plate) setPlate(toImageData(opts.plate, w, h));
+  else capturePlate(name === 'camera' ? 3 : 0);
 }
 function fitCanvas() {
-  const s = Math.min(innerWidth / canvas.width, innerHeight / canvas.height);
+  const st = $('stage').getBoundingClientRect();
+  const s = Math.min(st.width / canvas.width, st.height / canvas.height);
+  if (!(s > 0)) return;
   canvas.style.width = `${Math.floor(canvas.width * s)}px`;
   canvas.style.height = `${Math.floor(canvas.height * s)}px`;
 }
-addEventListener('resize', fitCanvas);
+new ResizeObserver(fitCanvas).observe($('stage'));
 
 // ------------------------------------------------------------------ the empty scene
 async function capturePlate(countdown = 3) {
@@ -84,17 +99,20 @@ async function capturePlate(countdown = 3) {
   c.hidden = false; c.innerHTML = '<small>Capturing the empty scene…</small>';
   S.capture = new PlateCapture(canvas.width, canvas.height, 30, 4);
 }
-function finishPlate() {
-  const { image, neverEmpty } = S.capture.result();
-  S.capture = null;
+function setPlate(image) {
   S.plateData = image;
   S.plateSmall = shrink(image, DW, Math.round(DW * canvas.height / canvas.width));
   comp.uploadImage(comp.tex.plate, image);
   S.plate = true;
   $('count').hidden = true;
+  for (const w of S.worlds) if (w.kind === 0 && w.img) w.aff = fitAffine(S.plateData, toImageData(w.img, canvas.width, canvas.height));
+}
+function finishPlate() {
+  const { image, neverEmpty } = S.capture.result();
+  S.capture = null;
+  setPlate(image);
   toast(neverEmpty > 0.05 ? `Empty scene captured (${Math.round(neverEmpty * 100)}% was never clear)` : 'Empty scene captured');
   lockExposure();
-  for (const w of S.worlds) if (w.kind === 0 && w.img) w.aff = fitAffine(S.plateData, toImageData(w.img, canvas.width, canvas.height));
   if (S.server) sendPlate();
 }
 async function lockExposure() {
@@ -110,23 +128,25 @@ async function lockExposure() {
   }
 }
 
-// ------------------------------------------------------------------ segmentation (per video frame)
-let segPending = false;
-function scheduleSegmentation() {
+// ------------------------------------------------------------------ masks (per video frame)
+let segPending = false, segGen = 0;
+function scheduleSegmentation(reset = false) {
+  if (reset) { segGen++; segPending = false; }      // drop callbacks still queued on a previous source
   const v = S.video;
   if (segPending || !v) return;
   segPending = true;
-  const run = () => { segPending = false; onVideoFrame(); scheduleSegmentation(); };
+  const g = segGen;
+  const run = () => { if (g !== segGen) return; segPending = false; onVideoFrame(); scheduleSegmentation(); };
   if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(run); else setTimeout(run, 33);
 }
 function onVideoFrame() {
   const v = S.video;
-  if (!seg || !v || v.readyState < 2 || v.videoWidth !== canvas.width) return;
+  if (!comp || !v || v.readyState < 2 || v.videoWidth !== canvas.width) return;
   const t0 = performance.now();
-  const res = segmentFrame(seg, v, t0);
-  S.segMs = 0.9 * S.segMs + 0.1 * (performance.now() - t0);
-  if (!res) return;
+  const res = seg ? segmentFrame(seg, v, t0) : null;     // without the segmenter, the background difference alone
+  if (seg && !res) return;
   const comb = combineMasks(res, v);
+  S.segMs = 0.9 * S.segMs + 0.1 * (performance.now() - t0);
   if (!S.mask || S.mask.w !== comb.w || S.mask.h !== comb.h) {
     S.mask = { data: comb.data, w: comb.w, h: comb.h, u8: new Uint8Array(comb.w * comb.h) };
   } else {
@@ -174,7 +194,7 @@ function morph(src, w, h, r, op) {                 // separable square min/max f
 function combineMasks(seg, video) {
   const w = DW, h = Math.round(DW * canvas.height / canvas.width), n = w * h;
   const out = new Float32Array(n);
-  for (let y = 0; y < h; y++) {
+  if (seg) for (let y = 0; y < h; y++) {
     const row = Math.min(seg.h - 1, Math.floor((y + 0.5) * seg.h / h)) * seg.w;
     for (let x = 0; x < w; x++) out[y * w + x] = seg.data[row + Math.min(seg.w - 1, Math.floor((x + 0.5) * seg.w / w))];
   }
@@ -227,7 +247,7 @@ function ruleWeight(x, y) {        // normalized camera coords -> 0 real .. 1 ot
   }
   return 1;
 }
-function breath() { return 1 + 0.05 * Math.sin(performance.now() / 1000 * 2 * Math.PI / 3); }
+function breath() { return REDUCED ? 1 : 1 + 0.05 * Math.sin(performance.now() / 1000 * 2 * Math.PI / 3); }
 
 // People as blobs on a coarse grid: each gets one weight from where they stand (portal mode), and
 // crossings (a person going from real to the other world) trigger sound, a flash, and a glitch.
@@ -296,30 +316,90 @@ function onCrossing() {
   const now = performance.now();
   if (now - (S.lastCrossT || 0) < 600) return;
   S.lastCrossT = now; S.crossings++;
-  S.flash = Math.max(S.flash, 0.35);
+  flash(0.35);
   if (S.autoGlitch) S.glitchUntil = now + 450;
   if (audio && !S.muted) audio.whoosh();
 }
 
 // ------------------------------------------------------------------ worlds
 function currentWorld() { return S.worlds[S.world]; }
-function setWorld(i) {
+function worldLabel(w) { return w.kind === 0 ? `${w.name} · ${w.group === 'yours' ? 'your image' : 'generated'}` : w.name; }
+function setWorld(i, quiet = false) {
   if (i < 0 || i >= S.worlds.length) return;
   S.world = i;
   if (audio) audio.setWorld(i);
-  S.flash = Math.max(S.flash, 0.25);
-  toast(S.worlds[i].name);
+  flash(0.25);
+  if (!quiet) toast(worldLabel(S.worlds[i]));
+  renderControls();
 }
-async function addImageWorld(name, src, url) {
+function setMode(m, quiet = false) {
+  S.mode = m; S.tracks = [];
+  if (!quiet) toast(`Rule: ${MODES[m]}`);
+  renderControls();
+}
+async function addImageWorld(name, src, url, { quiet = false, group = 'generated' } = {}) {
   const bmp = src instanceof ImageBitmap ? src : await createImageBitmap(src);
-  const w = { name, kind: 0, img: bmp, url, aff: IDENTITY_AFF };
+  const w = { name, kind: 0, img: bmp, url, aff: IDENTITY_AFF, group };
   const data = toImageData(bmp, canvas.width, canvas.height);
   w.tex = comp.newTexture();
   comp.uploadImage(w.tex, data);
   if (S.plateData) w.aff = fitAffine(S.plateData, data);
   S.worlds.push(w);
-  toast(`New world: ${name} (key ${S.worlds.length <= 9 ? S.worlds.length : 'N'})`);
+  if (!quiet) toast(`New world: ${name} (key ${S.worlds.length <= 9 ? S.worlds.length : 'N'})`);
+  renderControls();
   return S.worlds.length - 1;
+}
+function removeImageWorlds() {           // image worlds belong to one view; drop them when the view changes
+  for (const w of S.worlds) if (w.kind === 0 && w.tex) comp.gl.deleteTexture(w.tex);
+  S.worlds = S.worlds.filter((w) => w.kind !== 0);
+  S.world = Math.min(S.world, S.worlds.length - 1);
+}
+
+// ------------------------------------------------------------------ recorded scenes (hosted demo)
+// A scene is a fixed-camera clip with its empty scene and generated worlds made offline
+// (scripts/build_portal_artifact.py).
+let sceneGen = 0;
+async function fetchBlob(src) {
+  const r = await fetch(src);
+  if (!r.ok) throw new Error(`could not load ${src} (${r.status})`);
+  return r.blob();
+}
+async function loadScene(i) {
+  const sc = S.scenes[i]; if (!sc) return;
+  const g = ++sceneGen;
+  toast(`Loading ${sc.name}…`, 20000);
+  try {
+    const [clip, plate, ...worlds] = await Promise.all([
+      fetchBlob(sc.clip), fetchBlob(sc.plate).then((b) => createImageBitmap(b)),
+      ...sc.worlds.map((w) => fetchBlob(w.src).then((b) => createImageBitmap(b)))]);
+    if (g !== sceneGen) return;
+    removeImageWorlds();
+    S.scene = i;
+    await useSource('clip', { src: URL.createObjectURL(clip), plate });
+    if (sc.line) Object.assign(S.line, sc.line);
+    if (sc.portal) Object.assign(S.portal, sc.portal);
+    for (let k = 0; k < worlds.length; k++) await addImageWorld(sc.worlds[k].name, worlds[k], sc.worlds[k].src, { quiet: true });
+    const start = S.worlds.findIndex((w) => w.kind === 0 && w.name === sc.startWorld);
+    setWorld(start >= 0 ? start : 0, true);
+    toast(`${sc.name}: ${worldLabel(currentWorld())}`);
+  } catch (e) {
+    log(`scene ${sc.name}: ${e.message || e}`);
+    toast(`Could not load ${sc.name}: ${e.message || e}`, 8000);
+  }
+  renderControls();
+}
+async function useVideoFile(file) {
+  sceneGen++;
+  removeImageWorlds();
+  S.scene = -1; S.plate = null;
+  try {
+    await useSource('clip', { src: URL.createObjectURL(file) });
+    toast('Your video: capturing its empty scene. Use a fixed camera for the best result.', 5000);
+  } catch (e) {
+    toast(`This browser could not play ${file.name}. Try an MP4 (H.264) file.`, 8000);
+    log(`video file: ${e}`);
+  }
+  renderControls();
 }
 
 // ------------------------------------------------------------------ local server: generated worlds
@@ -388,7 +468,8 @@ function frame(now) {
   if (now - S.lastFpsT > 500) {
     S.fps = (S.frames - (S.fpsBase || 0)) * 1000 / (now - S.lastFpsT); S.fpsBase = S.frames; S.lastFpsT = now;
     const dbg = S.debug ? ` · ${S.fps.toFixed(0)} fps · mask ${S.segMs.toFixed(0)} ms (${S.delegate}) · gain ${S.gain.toFixed(2)}` : '';
-    $('hudsub').textContent = `${w.name} · ${MODES[S.mode]}${S.source === 'clip' ? ' · recorded clip' : ''}${S.progress ? ' · ' + S.progress : ''}${dbg}`;
+    const where = S.scenes[S.scene] ? ` · ${S.scenes[S.scene].name}` : S.source === 'clip' ? ' · recorded clip' : '';
+    $('hudsub').textContent = `${w.name} · ${MODES[S.mode]}${where}${S.progress ? ' · ' + S.progress : ''}${dbg}`;
   }
 }
 
@@ -402,7 +483,8 @@ function toFrame(e) {
 let dragging = false;
 canvas.addEventListener('pointerdown', (e) => { dragging = true; canvas.setPointerCapture(e.pointerId); onPointer(e); });
 canvas.addEventListener('pointerup', () => { dragging = false; });
-canvas.addEventListener('pointermove', (e) => { if (dragging || S.mode === 2) onPointer(e); });
+canvas.addEventListener('pointercancel', () => { dragging = false; });
+canvas.addEventListener('pointermove', (e) => { if (dragging || (S.mode === 2 && e.pointerType === 'mouse')) onPointer(e); });
 function onPointer(e) {
   const [x, y] = toFrame(e);
   if (S.mode === 0) { S.line.x = x; S.line.y = y; }
@@ -415,57 +497,150 @@ canvas.addEventListener('wheel', (e) => {
   if (S.mode === 1) S.portal.r = Math.min(0.6, Math.max(0.05, S.portal.r * k));
   if (S.mode === 2) S.lens.r = Math.min(0.8, Math.max(0.05, S.lens.r * k));
 }, { passive: false });
+
+function glitchBurst() { S.glitchUntil = performance.now() + (REDUCED ? 500 : 1500); }
+function toggleCycle() { S.autoCycle = !S.autoCycle; S.lastCycle = performance.now(); toast(`Auto-cycle ${S.autoCycle ? 'on' : 'off'}`); renderControls(); }
+async function ensureAudio() {
+  try {
+    if (!audio) { audio = new PortalAudio(); audio.setWorld(S.world); }
+    audio.setMuted(S.muted);
+    if (!S.muted) await audio.resume();
+  } catch (e) { log(`audio: ${e}`); }
+}
+function toggleSound() {
+  S.muted = !S.muted;
+  if (audio || !S.muted) ensureAudio();
+  toast(S.muted ? 'Sound off' : 'Sound on');
+  renderControls();
+}
+function toggleFullscreen() {
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  else if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => toast('Full screen is not available here'));
+}
+function toggleHelp(show) { const h = $('help'); if (h) h.hidden = show === undefined ? !h.hidden : !show; }
+function switchSource() {
+  if (!CFG.camera) { toast('The live camera runs in the local kiosk (see README)'); return; }
+  sceneGen++; S.scene = -1;
+  useSource(S.source === 'camera' ? 'clip' : 'camera').then(renderControls);
+}
+
 addEventListener('keydown', (e) => {
+  if (e.target instanceof HTMLSelectElement || e.target instanceof HTMLInputElement) return;
   const k = e.key.toLowerCase();
+  if (e.target instanceof HTMLButtonElement && (k === ' ' || k === 'enter')) return;   // the button's own click
   if (k >= '1' && k <= '9') setWorld(+k - 1);
   else if (k === 'n') setWorld((S.world + 1) % S.worlds.length);
-  else if (k === 'm') { S.mode = (S.mode + 1) % MODES.length; S.tracks = []; toast(`Rule: ${MODES[S.mode]}`); }
+  else if (k === 'm') setMode((S.mode + 1) % MODES.length);
   else if (k === 'c') capturePlate(3);
-  else if (k === 'g') S.glitchUntil = performance.now() + 1500;
+  else if (k === 'g') glitchBurst();
   else if (k === 'x') { S.autoGlitch = !S.autoGlitch; toast(`Auto-glitch ${S.autoGlitch ? 'on' : 'off'}`); }
-  else if (k === ' ') { S.autoCycle = !S.autoCycle; S.lastCycle = performance.now(); toast(`Auto-cycle ${S.autoCycle ? 'on' : 'off'}`); e.preventDefault(); }
-  else if (k === 'b') useSource(S.source === 'camera' ? 'clip' : 'camera');
+  else if (k === ' ') { toggleCycle(); e.preventDefault(); }
+  else if (k === 'b') switchSource();
   else if (k === 'r') S.mirror = !S.mirror;
   else if (k === 'd') S.debug = !S.debug;
   else if (k === 't') { S.diff = !S.diff; toast(`Hole filling ${S.diff ? 'on' : 'off'}`); }
-  else if (k === 's') { S.muted = !S.muted; if (audio) audio.setMuted(S.muted); toast(S.muted ? 'Sound off' : 'Sound on'); }
-  else if (k === 'f') { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen().catch(() => {}); }
-  else if (k === 'h') $('help').hidden = !$('help').hidden;
+  else if (k === 's') toggleSound();
+  else if (k === 'f') toggleFullscreen();
+  else if (k === 'h' || (k === 'escape' && $('help') && !$('help').hidden)) toggleHelp(k === 'h' ? undefined : false);
   else if (e.key === '[') S.line.angle -= 0.05;
   else if (e.key === ']') S.line.angle += 0.05;
   else if (e.key === 'ArrowLeft') S.line.x = Math.max(0, S.line.x - 0.01);
   else if (e.key === 'ArrowRight') S.line.x = Math.min(1, S.line.x + 0.01);
 });
+async function takeFile(f) {
+  if (!f) return;
+  if (f.type.startsWith('video/')) await useVideoFile(f);
+  else if (f.type.startsWith('image/')) setWorld(await addImageWorld(f.name.replace(/\.[^.]+$/, ''), f, '', { group: 'yours' }));
+  else toast('Drop a video of a fixed camera, or an image of the same view');
+}
 addEventListener('dragover', (e) => e.preventDefault());
 addEventListener('drop', async (e) => {
   e.preventDefault();
-  const f = [...e.dataTransfer.files].find((x) => x.type.startsWith('image/'));
-  if (f) setWorld(await addImageWorld(f.name.replace(/\.[^.]+$/, ''), f));
+  const files = [...e.dataTransfer.files];
+  await takeFile(files.find((x) => x.type.startsWith('video/')) || files.find((x) => x.type.startsWith('image/')) || files[0]);
 });
+
+// ------------------------------------------------------------------ on-screen controls (if the page has them)
+function chip(label, pressed, onClick, cls = '') {
+  const b = document.createElement('button');
+  b.type = 'button'; b.className = `chip ${cls}`.trim(); b.textContent = label;
+  b.setAttribute('aria-pressed', String(pressed)); b.addEventListener('click', onClick);
+  return b;
+}
+function renderControls() {
+  const box = $('worlds');
+  if (!box) return;
+  const groups = [['generated', 'Generated'], ['yours', 'Yours'], ['shader', 'Instant']];
+  const kids = [];
+  for (const [g, title] of groups) {
+    const idx = S.worlds.map((w, i) => i).filter((i) => (S.worlds[i].kind === 0 ? S.worlds[i].group : 'shader') === g);
+    if (!idx.length) continue;
+    const t = document.createElement('span'); t.className = 'group'; t.textContent = title; kids.push(t);
+    for (const i of idx) kids.push(chip(S.worlds[i].name, i === S.world, () => setWorld(i), g));
+  }
+  box.replaceChildren(...kids);
+  const on = box.querySelector('[aria-pressed="true"]');
+  if (on && on.scrollIntoView) on.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  for (const b of document.querySelectorAll('[data-mode]')) b.setAttribute('aria-pressed', String(+b.dataset.mode === S.mode));
+  if ($('b-cycle')) $('b-cycle').setAttribute('aria-pressed', String(S.autoCycle));
+  if ($('b-sound')) { $('b-sound').setAttribute('aria-pressed', String(!S.muted)); $('b-sound').textContent = S.muted ? 'Sound off' : 'Sound on'; }
+  const sel = $('scene');
+  if (sel) {
+    const opts = S.scenes.map((s, i) => new Option(s.name, String(i)));
+    if (S.scene < 0) opts.push(new Option(S.source === 'camera' ? 'Live camera' : 'Your video', '-1'));
+    sel.replaceChildren(...opts);
+    sel.value = String(S.scene);
+  }
+}
+function bindControls() {
+  if (!$('controls')) return;
+  for (const b of document.querySelectorAll('[data-mode]')) b.addEventListener('click', () => setMode(+b.dataset.mode));
+  const on = (id, fn) => { if ($(id)) $(id).addEventListener('click', fn); };
+  on('b-glitch', glitchBurst); on('b-cycle', toggleCycle); on('b-sound', toggleSound);
+  on('b-full', toggleFullscreen); on('b-help', () => toggleHelp()); on('help-close', () => toggleHelp(false));
+  on('b-upload', () => $('file') && $('file').click());
+  if ($('b-full') && !document.fullscreenEnabled) $('b-full').hidden = true;
+  if ($('file')) $('file').addEventListener('change', (e) => { takeFile(e.target.files[0]); e.target.value = ''; });
+  if ($('scene')) $('scene').addEventListener('change', (e) => { const i = +e.target.value; if (i >= 0) loadScene(i); });
+  if ($('help')) $('help').addEventListener('click', (e) => { if (e.target === $('help')) toggleHelp(false); });
+}
 
 // ------------------------------------------------------------------ start
 async function start() {
-  $('start').hidden = true;
-  try { audio = new PortalAudio(); await audio.resume(); } catch (e) { log(`audio: ${e}`); }
+  if ($('start')) $('start').hidden = true;
+  if (!S.muted) await ensureAudio();      // muted pages create it on the first Sound press (browsers need a gesture)
   try {
     comp = new Compositor(canvas);
   } catch (e) { toast(e.message, 10000); throw e; }
-  checkServer();
-  const s = await createSegmenter(log);
-  seg = s.seg; S.delegate = s.delegate;
-  await useSource(S.source);
+  if (CFG.server) checkServer();
+  if (CFG.segmenter) {
+    try {
+      const m = await import('./segment.js');
+      const s = await m.createSegmenter(log);
+      seg = s.seg; S.delegate = s.delegate; segmentFrame = m.segmentFrame;
+    } catch (e) { log(`person segmenter unavailable, using the background difference: ${e.message || e}`); }
+  }
+  if (!seg) S.delegate = 'background difference';
+  if (typeof CFG.scenes === 'string') {
+    try { S.scenes = await (await fetchBlob(CFG.scenes)).text().then(JSON.parse); }
+    catch (e) { log(`scenes: ${e.message || e}`); S.scenes = []; }
+  } else S.scenes = CFG.scenes || [];
   requestAnimationFrame(frame);
+  if (S.scenes.length) await loadScene(Math.min(CFG.startScene, S.scenes.length - 1));
+  else await useSource(S.source);
+  renderControls();
 }
-$('go').addEventListener('click', start);
-if (params.get('autostart') === '1') start();
+bindControls();
+if ($('go')) $('go').addEventListener('click', start);
+if (CFG.autostart) start();
 
 // for tests and debugging
 window.__portal = {
   get state() { return S; },
-  setWorld, setMode: (m) => { S.mode = m; S.tracks = []; }, setMirror: (b) => { S.mirror = b; },
+  setWorld, setMode: (m) => setMode(m, true), setMirror: (b) => { S.mirror = b; },
   glitch: (ms) => { S.glitchUntil = performance.now() + ms; }, capture: () => capturePlate(0),
   setLine: (x, angle = 0) => { S.line.x = x; S.line.angle = angle; },
-  setDebug: (b) => { S.debug = b; },
+  setDebug: (b) => { S.debug = b; }, loadScene,
   // mean |output - camera| (0-255) over a column band [x0, x1) of the frame, plus the camera frame used
   compare(x0, x1) {
     const { px, w, h } = comp.readPixels();

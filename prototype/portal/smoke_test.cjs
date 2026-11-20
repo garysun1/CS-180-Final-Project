@@ -34,10 +34,14 @@ const path = require('path');
     });
     Object.assign(report, st);
     // line in the middle: left of it must be the camera frame, right of it the world
-    await page.evaluate(() => { window.__portal.setDebug(false); window.__portal.setLine(0.5); window.__portal.setWorld(0); window.__portal.setMode(0); });
+    // no auto-glitch while comparing: a crossing would tear the frame for 450 ms
+    await page.evaluate(() => { const p = window.__portal; p.setDebug(false); p.setLine(0.5); p.setWorld(0); p.setMode(0); p.state.autoGlitch = false; });
     await page.waitForTimeout(3000);                      // let the world-switch flash fade
+    // crossings also flash the frame: compare on a frame with no flash
+    await page.waitForFunction(() => window.__portal.state.flash < 0.02, null, { timeout: 30000 });
     report.diffRealSide = await page.evaluate(() => window.__portal.compare(0.02, 0.4));
     report.diffWorldSide = await page.evaluate(() => window.__portal.compare(0.6, 0.98));
+    await page.evaluate(() => { window.__portal.state.autoGlitch = true; });
     const shots = [];
     const snap = async (name) => { const p = path.join(out, `${name}.png`); await page.screenshot({ path: p }); shots.push(p); };
     for (let k = 0; k < 6; k++) {

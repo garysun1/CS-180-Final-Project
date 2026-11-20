@@ -36,6 +36,26 @@ for three seconds while the empty scene is captured. People may stay in view: th
 `?source=clip` starts on the recorded fallback clip (`clips/fallback.mp4`, or `?clip=path.mp4`).
 `?mirror=0` turns off the selfie mirror. `?debug=1` shows the mask, fps and timings.
 
+## Hosted demo (no install)
+
+The same code also runs as a web page on recorded scenes. The page is
+<https://claude.ai/artifact/X5CC9ZXuQ7xwdemQcU9apw>; it is private until shared.
+- **Scenes:** the plaza, crowd and street clips, each with its clean plate and Stable Diffusion
+  worlds made offline.
+- **No camera, server or segmenter there:** people come from the background-difference mask alone,
+  which is also what finds distant people in the kiosk.
+- **Your own video:** you can load a fixed-camera video; its empty scene is captured from the first
+  frames.
+- **Controls:** on-screen buttons and touch work too.
+
+The page is `artifact/page.html`. Build the folder with:
+
+```bash
+python scripts/build_portal_artifact.py OUT_DIR --harness
+```
+
+`harness.html` wraps the page with a similar content security policy for local testing.
+
 ## Controls
 
 | Key | Action |
@@ -71,7 +91,8 @@ for three seconds while the empty scene is captured. People may stay in view: th
 
 ## Files
 
-- `index.html`, `app.js`: UI, the loop, rules, crossings, keys, server polling.
+- `index.html`, `app.js`: UI, the loop, rules, crossings, keys, server polling, recorded scenes.
+- `artifact/page.html`: the hosted page (on-screen controls; config in `window.PORTAL_CONFIG`).
 - `compositor.js`: the WebGL2 shader (worlds, rules, glitch).
 - `segment.js`: MediaPipe segmenter (GPU delegate, CPU fallback).
 - `plate.js`: empty-scene capture; colour matching for generated worlds (least-squares affine).

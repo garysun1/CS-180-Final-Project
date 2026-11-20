@@ -1,0 +1,147 @@
+<title>Cross the Line Portal</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;700&display=swap">
+<style>
+  /* Layout: one screen. The live picture fills the top; a control strip and a one-line note sit below.
+     A single dark look on purpose: it is a screen in a dark booth. */
+  :root {
+    --bg: #080a0e; --panel: #10141b; --rule: #232b37; --ink: #e9edf2; --ink-2: #9ba7b5;
+    --seam: #bfe9ff; --gen: #e3b874; --live: #ff6b6b;
+    --display: "Space Grotesk", "Avenir Next", system-ui, sans-serif;
+    --ui: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    color-scheme: dark;
+  }
+  html { height: 100%; box-sizing: border-box; background: var(--bg); }
+  *, *::before, *::after { box-sizing: inherit; }
+  body {
+    height: 100%; margin: 0; overflow: hidden; background: var(--bg); color: var(--ink);
+    font: 14px/1.45 var(--ui);
+    display: grid; grid-template-rows: minmax(0, 1fr) auto auto; gap: 10px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 12px;
+  }
+  #stage { position: relative; min-height: 0; min-width: 0; display: grid; place-items: center; overflow: hidden;
+    border-radius: 6px; background: #000; }
+  canvas { display: block; cursor: crosshair; touch-action: none; }
+  .hud { position: absolute; left: 14px; top: 10px; pointer-events: none; text-shadow: 0 1px 8px #000;
+    font: 700 15px/1.2 var(--display); letter-spacing: .08em; text-transform: uppercase; }
+  .hud small { display: block; margin-top: 3px; font: 400 12px/1.3 var(--mono); letter-spacing: 0; text-transform: none; color: var(--ink-2); }
+  #notice { position: absolute; right: 12px; bottom: 10px; font-size: 12px; color: var(--ink-2); text-shadow: 0 1px 6px #000; pointer-events: none; }
+  #notice b { color: var(--live); font-weight: 600; }
+  #toast { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); max-width: calc(100% - 24px);
+    padding: 7px 13px; background: rgba(9, 12, 17, .86); border: 1px solid var(--rule); border-radius: 8px;
+    font-size: 13px; opacity: 0; transition: opacity .25s; pointer-events: none; text-align: center; }
+  #toast.on { opacity: 1; }
+  #count { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; text-align: center;
+    font: 700 min(16vw, 120px)/1 var(--display); text-shadow: 0 4px 40px #000; }
+  #count small { display: block; font: 500 16px/1.3 var(--ui); color: var(--ink); }
+
+  #controls { display: grid; gap: 8px; min-width: 0; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; }
+  button, select { font: 500 13px/1 var(--ui); color: var(--ink); background: var(--panel); border: 1px solid var(--rule);
+    border-radius: 999px; padding: 8px 13px; cursor: pointer; }
+  select { border-radius: 8px; padding: 7px 10px; }
+  button:hover, select:hover { border-color: #3a4656; }
+  button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid var(--seam); outline-offset: 2px; }
+  button[aria-pressed="true"] { background: var(--seam); border-color: var(--seam); color: #071018; }
+  .seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 999px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; background: var(--panel); }
+  .seg button + button { border-left: 1px solid var(--rule); }
+  .seg button[aria-pressed="true"] { background: var(--seam); }
+  .label { font: 600 11px/1 var(--ui); letter-spacing: .08em; text-transform: uppercase; color: var(--ink-2); }
+  #b-glitch { border-color: #5a3d6e; }
+  .spacer { flex: 1 1 0; }
+  #worlds { display: flex; gap: 6px; align-items: center; overflow-x: auto; padding-bottom: 4px; scrollbar-width: thin; min-width: 0; }
+  #worlds .chip { flex: none; }
+  #worlds .group { flex: none; margin: 0 2px 0 8px; font: 600 11px/1 var(--ui); letter-spacing: .08em; text-transform: uppercase; color: var(--ink-2); }
+  #worlds .group:first-child { margin-left: 0; }
+  #worlds .chip.generated, #worlds .chip.yours { border-color: #5b4a2c; }
+  #worlds .chip.generated[aria-pressed="true"], #worlds .chip.yours[aria-pressed="true"] { background: var(--gen); border-color: var(--gen); color: #1a1206; }
+
+  footer { font-size: 12px; color: var(--ink-2); max-width: 110ch; }
+  footer code { font: 12px var(--mono); color: var(--ink); }
+  a { color: var(--seam); }
+
+  #help { position: fixed; inset: 0; z-index: 5; display: grid; place-items: center; background: rgba(4, 6, 9, .86);
+    padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 16px; }
+  #help .card { max-width: 620px; max-height: 100%; overflow: auto; background: var(--panel); border: 1px solid var(--rule);
+    border-radius: 10px; padding: 20px 22px; }
+  #help h2 { margin: 0 0 4px; font: 700 22px/1.2 var(--display); text-wrap: balance; }
+  #help p { margin: 0 0 12px; color: var(--ink-2); max-width: 65ch; }
+  .keys { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 14px; margin: 0 0 14px; color: var(--ink-2); }
+  .keys dt { margin: 0; color: var(--ink); white-space: nowrap; }
+  .keys dd { margin: 0; }
+  kbd { font: 600 12px var(--mono); color: var(--ink); background: #1b212b; border: 1px solid #2b3442; border-radius: 5px; padding: 1px 6px; }
+  @media (max-width: 560px) {
+    body { gap: 8px; padding-block: 8px; }
+    button, select { padding: 8px 11px; }
+    .spacer, #b-full, #b-help { display: none; }
+    footer { font-size: 11px; }
+  }
+  @media (prefers-reduced-motion: reduce) { #toast { transition: none; } }
+  [hidden] { display: none !important; }
+</style>
+
+<div id="stage">
+  <canvas id="view" width="768" height="576" aria-label="The scene, with people crossing into another world"></canvas>
+  <div class="hud">Cross the Line<small id="hudsub">Loading the plaza…</small></div>
+  <div id="notice"><b>●</b> Recorded clip · runs entirely in your browser</div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <div id="count" hidden></div>
+</div>
+
+<div id="controls">
+  <div class="row">
+    <label class="label" for="scene">Scene</label>
+    <select id="scene"><option>Plaza</option></select>
+    <div class="seg" role="group" aria-label="Rule">
+      <button type="button" data-mode="0" aria-pressed="true">Line</button>
+      <button type="button" data-mode="1" aria-pressed="false">Portal</button>
+      <button type="button" data-mode="2" aria-pressed="false">Lens</button>
+      <button type="button" data-mode="3" aria-pressed="false">Whole</button>
+    </div>
+    <button type="button" id="b-glitch">Glitch</button>
+    <button type="button" id="b-cycle" aria-pressed="false">Auto-cycle</button>
+    <button type="button" id="b-sound" aria-pressed="false">Sound off</button>
+    <span class="spacer"></span>
+    <button type="button" id="b-upload">Your video</button>
+    <input type="file" id="file" accept="video/*,image/*" hidden>
+    <button type="button" id="b-full">Full screen</button>
+    <button type="button" id="b-help">How to play</button>
+  </div>
+  <div id="worlds" role="group" aria-label="World"></div>
+</div>
+
+<footer>Drag the line across the picture and watch people walk into another world. This runs the kiosk's own code on recorded
+  clips; the live-camera version runs on a laptop with <code>python -m crossover.portal_server</code>.
+  Method and trailer: <a href="https://claude.ai/artifact/BZs9iGmSYMXA7z81XCxDnf" target="_blank" rel="noopener">Cross the Line</a>.</footer>
+
+<div id="help" hidden>
+  <div class="card" role="dialog" aria-labelledby="help-title">
+    <h2 id="help-title">How to play</h2>
+    <p>Each scene is a fixed camera. The page knows the empty scene, so anyone who differs from it is a person. People
+      are cut out every frame and shown in the other world wherever the rule says so.</p>
+    <dl class="keys">
+      <dt>Drag the picture</dt><dd>move the line or the portal ring; the lens follows the pointer</dd>
+      <dt>Scroll</dt><dd>resize the ring or the lens</dd>
+      <dt><kbd>1</kbd>–<kbd>9</kbd> <kbd>N</kbd></dt><dd>choose a world, next world; <kbd>Space</kbd> auto-cycles</dd>
+      <dt><kbd>M</kbd></dt><dd>rule: line (split at the line), portal (each person changes by where they stand), lens, whole frame</dd>
+      <dt><kbd>G</kbd> <kbd>X</kbd></dt><dd>glitch burst; auto-glitch on every crossing</dd>
+      <dt><kbd>[</kbd> <kbd>]</kbd> <kbd>←</kbd> <kbd>→</kbd></dt><dd>tilt or move the line</dd>
+      <dt><kbd>S</kbd> <kbd>F</kbd> <kbd>D</kbd></dt><dd>sound, full screen, debug view (mask and timings)</dd>
+      <dt>Your video</dt><dd>use a clip from a fixed camera. The empty scene is the per-pixel median of its first frames, so
+        people should keep moving. Drop an image of the same view to add it as a world.</dd>
+    </dl>
+    <button type="button" id="help-close">Close</button>
+  </div>
+</div>
+
+<video id="cam" playsinline muted hidden></video>
+<video id="clip" playsinline muted loop hidden></video>
+<script>
+  window.PORTAL_CONFIG = { camera: false, server: false, segmenter: false, muted: true, autostart: true, scenes: './scenes.json' };
+</script>
+<script type="module" src="./app.js"></script>

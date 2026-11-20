@@ -410,6 +410,8 @@ steps into the ring or walks under the lens appears in another world, live.
   Diffusion worlds from the captured scene, and they appear as they finish.
 - **Setup:** `bash portal/fetch_vendor.sh`, then `python -m crossover.portal_server`, then open
   http://localhost:8000. Keys, the fallback ladder and setup tips are in `portal/README.md`.
+- **Hosted demo:** the same code runs in the browser on three recorded scenes with their generated
+  worlds (no camera, no server). Build it with `python scripts/build_portal_artifact.py OUT_DIR`.
 
 ## Shooting checklist for the real clips
 
