@@ -165,11 +165,18 @@ subprocess.run([sys.executable, f"{PROJ}/scripts/demo_reel.py"] + [f"{OUT}/vtest
                check=True, stdout=subprocess.DEVNULL)
 video(f"{OUT}/demo_reel_sd.mp4", "reel_sd.mp4", crf=26, poster_t=2.5)
 video(f"{OUT}/vtest_gen_1920s_depth/final_matched.mp4", "depth_sd_1920s.mp4", start=40, dur=25, poster_t=13.0)
-# the trailer (python -m crossover.trailer, then a CRF 25 web encode) is already web-ready
-import shutil  # noqa: E402
-shutil.copy(f"{OUT}/trailer_web.mp4", os.path.join(MEDIA, "trailer.mp4"))
-subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", "15.3", "-i", os.path.join(MEDIA, "trailer.mp4"), "-frames:v", "1",
-                "-q:v", "3", os.path.join(MEDIA, "trailer_poster.jpg")], check=True)
+# the trailer (python -m crossover.trailer): a web encode that keeps its soundtrack; the poster is her
+# moment on the line, the middle of the 'scan' shot in the trailer's edit list
+subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", f"{OUT}/trailer.mp4", "-c:v", "libx264", "-preset", "slow",
+                "-crf", "28", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
+                os.path.join(MEDIA, "trailer.mp4")], check=True)
+edl = json.load(open(f"{OUT}/trailer_edl.json"))
+scan = next((s for s in edl["shots"] if s["name"] == "scan"), None)
+poster_t = scan["start_s"] + 0.5 * scan["frames"] / edl["fps"] if scan else 15.3
+subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{poster_t:.2f}", "-i", os.path.join(MEDIA, "trailer.mp4"),
+                "-frames:v", "1", "-q:v", "3", os.path.join(MEDIA, "trailer_poster.jpg")], check=True)
+# the 15-second loop (python -m crossover.trailer --edit teaser): the page's muted hero
+video(f"{OUT}/teaser_wide.mp4", "teaser_wide.mp4", crf=27, poster_t=4.6)
 video(f"{OUT}/fx_crowd04_shards/shards.mp4", "fx_london_shards.mp4", crf=28, poster_t=12.0, width=768)
 video(f"{OUT}/fx_car_seasons/seasons.mp4", "fx_highway.mp4", crf=28, poster_t=15.0, speed=1.5, width=768)
 video(f"{OUT}/fx_vtest_windows/windows.mp4", "fx_windows.mp4", start=0, dur=32, crf=28, poster_t=10.0, speed=2.0)
@@ -235,4 +242,4 @@ for fn in sorted(os.listdir(MEDIA)):
     sz = os.path.getsize(os.path.join(MEDIA, fn))
     total += sz
     print(f"{fn:32s} {sz / 1024:8.0f} KB")
-print(f"total media {total / 1048576:.1f} MB")
+print(f"total media folder {total / 1048576:.1f} MB (make_page.py checks what the page references)")

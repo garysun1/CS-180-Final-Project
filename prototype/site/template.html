@@ -103,10 +103,10 @@ footer { border-top: 1px solid var(--rule); margin-top: 40px; padding-top: 14px;
     <h1 class="title"><span class="t">Cross the Line</span><span class="seam" aria-hidden="true"></span></h1>
   </div>
   <p class="lede">A tripod camera sees the same background in every frame. We <strong>restyle that background once</strong> with an image model, put the real people back, and anyone who crosses the line walks into another world.</p>
-  <p class="trylive"><a href="https://claude.ai/artifact/X5CC9ZXuQ7xwdemQcU9apw" target="_blank" rel="noopener">Play the portal kiosk</a> &middot; drag the line, switch worlds and set off the glitch on recorded scenes, live in your browser.</p>
+  <p class="trylive"><a href="https://claude.ai/artifact/X5CC9ZXuQ7xwdemQcU9apw" target="_blank" rel="noopener">Play the portal kiosk</a> &middot; drag the line, take the picture apart with Layers, split it by depth, and watch whoever crosses glitch into the world, live in your browser.</p>
   <figure>
-    <video id="reel" class="auto" src="media/trailer.mp4" poster="media/trailer_poster.jpg" muted loop playsinline autoplay controls preload="metadata" aria-label="Trailer: a walker crosses the line into winter, a montage of worlds, and a style-glitch climax"></video>
-    <figcaption>Trailer (turn the sound on). One generated image per world; only the people move. Footage: public clips standing in for our Sather Gate shoot. Edit and soundtrack are generated in code, cut on a 120 BPM grid.</figcaption>
+    <video id="reel" class="auto" src="media/teaser_wide.mp4" poster="media/teaser_wide_poster.jpg" muted loop playsinline autoplay preload="metadata" aria-label="A 15-second loop: a walker stops on the line and turns to winter, the plaza flips through worlds, and Van Gogh sweeps over a crowd"></video>
+    <figcaption><button type="button" class="chip" id="trailer-btn">Watch the trailer with sound</button> One generated image per world; only the people move. Footage: public clips standing in for our Sather Gate shoot. Edit and soundtrack are generated in code, cut on a 120 BPM grid.</figcaption>
   </figure>
 </header>
 
@@ -213,6 +213,16 @@ bash scripts/run_generative_demos.sh</pre>
   if (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) {
     for (const v of document.querySelectorAll('video.auto')) { v.removeAttribute('autoplay'); v.pause(); }
   }
+
+  // ---- hero: the 15-second loop plays muted; the button swaps in the full trailer with its sound ----
+  const reel = document.getElementById('reel'), tbtn = document.getElementById('trailer-btn');
+  tbtn.addEventListener('click', () => {
+    reel.src = 'media/trailer.mp4'; reel.poster = 'media/trailer_poster.jpg';
+    reel.loop = false; reel.muted = false; reel.controls = true;
+    reel.setAttribute('aria-label', 'Trailer: a walker freezes on the line and turns to winter, a montage of worlds, and a style-glitch climax');
+    reel.play().catch(() => {});
+    tbtn.hidden = true;
+  });
 
   // ---- drag the line ----
   const cmp = document.getElementById('compare'), over = document.getElementById('cmp-over');

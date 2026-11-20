@@ -46,3 +46,16 @@ if missing:
 html = re.sub(r"\{\{(\w+)\}\}", lambda m: V[m.group(1)], tpl)
 open(os.path.join(SITE, "index.html"), "w").write(html)
 print("wrote index.html", len(html) // 1024, "KB")
+
+# Everything the page can load: files named in it, plus files its script builds from a prefix
+# ('media/frame_sd_' + style + '.jpg'). The published page must stay within 16 MB.
+MEDIA = os.path.join(SITE, "media")
+refs = set(re.findall(r"media/([A-Za-z0-9_.\-]+)", html))
+names = {r for r in refs if os.path.exists(os.path.join(MEDIA, r))}
+for prefix in [r for r in refs if not os.path.exists(os.path.join(MEDIA, r))]:
+    names |= {f for f in os.listdir(MEDIA) if f.startswith(prefix)}
+total = len(html.encode()) + sum(os.path.getsize(os.path.join(MEDIA, n)) for n in names)
+json.dump(sorted("media/" + n for n in names), open(os.path.join(SITE, "files.json"), "w"), indent=1)
+print(f"page + referenced media: {total / 1e6:.2f} MB in {len(names)} files (files.json)")
+if total > 16_000_000:
+    raise SystemExit("over the 16 MB page budget: drop a clip or encode the videos smaller")

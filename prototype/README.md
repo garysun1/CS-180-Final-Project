@@ -375,29 +375,51 @@ image generation):
 - **Showcase:** `python scripts/showcase.py -o out/showcase2.mp4 --segments segments.json` builds a
   cut from any list of clips.
 
-## Trailer
+## Trailer and the 15-second loop
 
-`python -m crossover.trailer --out out/trailer.mp4` builds a 54.5 s trailer: 43 shots, 960×540 at 30 fps,
-with a soundtrack synthesized in code. Every shot is a whole number of beats at 120 BPM (15 frames), so
-cuts, flashes and hits line up.
+`python -m crossover.trailer --out out/trailer.mp4` builds a 54.5 s trailer: 960×540 at 30 fps, with a
+soundtrack synthesized in code. Every shot is a whole number of beats at 120 BPM (15 frames), so cuts,
+flashes and hits line up.
 
-- **Story:**
-  - The real plaza, then "the camera never moves": the walkers vanish into the empty scene.
-  - Winter sweeps in from the horizon, and a man crosses the line on a bass hit.
+- **Story (v2):**
+  - The real plaza, then "the camera never moves": the walkers vanish into the empty scene, and
+    winter sweeps in from the horizon.
+  - **The signature crossing: freeze, scan, flood.**
+    - *Freeze:* a woman walks to the glowing line while everyone else freezes mid-stride, and the
+      music tape-stops.
+    - *Scan:* the line slides back across her body, turning each part of her to winter, under a
+      cold scan light and a single ring.
+    - *Flood:* on the downbeat she steps through, and winter floods outward from her feet as a
+      ring until the whole plaza has crossed.
+    - Timings come from `scripts/find_moments.py`. Her centroid crosses x = 384 at 61.3 s, and the
+      frozen walkers keep their 59.7 s poses through the scan.
   - A montage ("any city / any era / any world") of the effects on three clips.
-  - A **style-glitch climax**: a follow-cam on one walker, whose figure flashes through comic,
-    thermal, ink, Van Gogh, cyberpunk, pixel, negative and more, every 4 → 2 → 1 frames, while
-    the world flashes and tears.
-  - A slow-motion London crossing, then the title.
+  - A 6-second **style-glitch climax** on one walker: their figure flashes through comic, thermal,
+    ink, Van Gogh, cyberpunk and more, every 4 → 2 → 1 frames. The world tears only in the last
+    two beats.
+  - A slow-motion London crossing, the title, and an **end card**: course, team names, the
+    project page's link and a QR code.
+- **The loop:** `python -m crossover.trailer --edit teaser --size 960x540 --crf 23 --out out/teaser_wide.mp4`
+  (also `--size 720x720`). It is 15 s and seamless: she walks to the line, is scanned, and winter
+  floods out; the plaza flips through eight worlds on the beat; a line uncovers Van Gogh over
+  Leicester Square; "ONE IMAGE. EVERY FRAME." appears in letters cut out of the painted world; then
+  the title. Its last frame is exactly its first. The project page uses it as its muted hero.
 - **Options:**
+  - `--names "A · B · C · D"` fills the end card. The default is a marked placeholder.
   - `--music track.mp3 --bpm N` swaps in a real track; cuts snap to its beat.
   - `--sections cold,drop,glitch` renders a quick draft of some sections.
+  - `--crf` sets the encode quality; `--size WxH` sets the frame size.
 - **Outputs:**
   - `*_frames.jpg`: one frame per shot, for review;
-  - `*_edl.json`: shot timings;
+  - `*_edl.json`: shot timings and source times;
   - `*.wav`: the soundtrack.
-- **New `comic` style:** a posterised print with a screen-fixed halftone and ink lines. It works
-  pixel by pixel on people too, so it doesn't flicker.
+  - v1 is kept as `out/trailer_v1.mp4`.
+- **Helpers:**
+  - `scripts/find_moments.py`: crossings of a line, with time, direction, track and size;
+  - `scripts/make_qr.py`: a printable QR code of the page.
+  - Fonts: Inter and JetBrains Mono, OFL, in `crossover/assets/fonts`.
+- **`comic` style:** a posterised print with a screen-fixed halftone and ink lines. It works pixel
+  by pixel on people too, so it doesn't flicker.
 
 ## Live portal kiosk (`portal/`)
 
@@ -412,6 +434,15 @@ steps into the ring or walks under the lens appears in another world, live.
   http://localhost:8000. Keys, the fallback ladder and setup tips are in `portal/README.md`.
 - **Hosted demo:** the same code runs in the browser on three recorded scenes with their generated
   worlds (no camera, no server). Build it with `python scripts/build_portal_artifact.py OUT_DIR`.
+- **On both:**
+  - people take the paper's local colour field;
+  - only the person who crosses glitches;
+  - **Layers** takes the picture apart into the filmed frame and mask, the empty scene, the one
+    generated image, the people, the rule and the result;
+  - **Depth** turns everything farther than a tapped distance into the other world, and new worlds
+    roll in from the horizon.
+- **Project page:** the source is in `site/`. `python site/build_media.py && python site/make_page.py`
+  rebuilds it and checks the 16 MB page budget.
 
 ## Shooting checklist for the real clips
 
@@ -427,10 +458,14 @@ steps into the ring or walks under the lens appears in another world, live.
 ## Layout
 
 ```
-crossover/  video_io  background  styles  animate  perturb  align  masks  depth  composite  line  metrics  figures  run  score  generate  colormap  effects  prepare  trailer
+crossover/  video_io  background  styles  animate  perturb  align  masks  depth  composite  line  metrics  figures  run  score  generate  colormap  effects  prepare  trailer  portal_server
+crossover/assets/fonts/   Inter, JetBrains Mono (OFL) for the trailer's type
+portal/     the live kiosk (index.html) and the hosted demo (artifact/page.html): one WebGL2 app, with browser tests
+site/       the project page: build_media.py, make_page.py, template.html, inputs/
 notebooks/gpu_restyle_and_sam3.ipynb   Colab: FLUX.2 Klein / Qwen-Image-Edit / SDXL+ControlNet restyles, SAM 3 masks (UNTESTED)
-scripts/    fetch_sample.sh  fetch_depth_model.sh  run_all_sample.sh  run_style_demos.sh  contact_sheet.py  demo_reel.py  summarize.py
-tests/      test_pipeline.py
+scripts/    fetch_sample.sh  fetch_depth_model.sh  fetch_clips.sh  run_all_sample.sh  run_style_demos.sh  run_generative_demos.sh
+            contact_sheet.py  demo_reel.py  summarize.py  showcase.py  build_portal_artifact.py  find_moments.py  make_qr.py
+tests/      test_pipeline.py  test_trailer.py
 ```
 
 ## Known limitations
