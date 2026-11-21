@@ -182,7 +182,8 @@ video(f"{OUT}/fx_car_seasons/seasons.mp4", "fx_highway.mp4", crf=28, poster_t=15
 video(f"{OUT}/fx_vtest_windows/windows.mp4", "fx_windows.mp4", start=0, dur=32, crf=28, poster_t=10.0, speed=2.0)
 video(f"{OUT}/fx_vtest_portal/portal.mp4", "fx_portal.mp4", start=10, dur=40, crf=28, poster_t=8.0, speed=2.0)
 video(f"{OUT}/fx_vtest_shards/shards.mp4", "fx_plaza_shards.mp4", start=10, dur=36, crf=28, poster_t=9.0, speed=2.0)
-video(f"{OUT}/fx_seasons/seasons.mp4", "fx_seasons.mp4", start=4, dur=68, crf=28, poster_t=12.0, speed=2.0)
+# Reality Melts (python -m crossover.trailer --edit melt): the one-take loop where each world grows in
+video(f"{OUT}/melt.mp4", "fx_melt.mp4", crf=28, poster_t=8.2)
 video(f"{OUT}/fx_trails/trails.mp4", "fx_trails.mp4", start=28, dur=26, crf=28, poster_t=12.0)
 video(f"{OUT}/vtest_century/breakdown.mp4", "breakdown.mp4", start=40, dur=25, poster_t=12.0)
 video(f"{OUT}/vtest_depth_night_sweep/final_matched.mp4", "depth_sweep.mp4", crf=28, poster_t=58.0)

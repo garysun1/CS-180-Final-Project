@@ -404,6 +404,21 @@ flashes and hits line up.
   floods out; the plaza flips through eight worlds on the beat; a line uncovers Van Gogh over
   Leicester Square; "ONE IMAGE. EVERY FRAME." appears in letters cut out of the painted world; then
   the title. Its last frame is exactly its first. The project page uses it as its muted hero.
+- **Reality Melts** (`crossover/melt.py`): a 16 s one-take loop of the plaza, framed high so the
+  facades are in, where worlds grow out of the filmed frame instead of cutting in.
+  - Each world climbs its ladder from `crossover/morph.py` (the empty scene, the filter the
+    generation started from, the lower-strength generations, the world), far pixels first. Walkers
+    take each step's light as it reaches their feet.
+  - Winter settles, night falls and the lamps come on, and four worlds hop in two seconds (Cyberpunk
+    in halftone dots). Then Van Gogh melts in with a swirl that leaves people crisp, holds on the one
+    generated image, and wakes back into the photo.
+  - Torn rewinds and white blinks replace cuts. The real beats are the filmed frames bit for bit
+    before the shared film finish (vignette and grain), and the last frame is the first.
+  - Render (about 1 min each):
+    - `python -m crossover.trailer --edit melt --size 960x540 --crf 20 --out out/melt.mp4`
+    - `python -m crossover.trailer --edit melt --size 720x720 --crf 20 --out out/melt_square.mp4`
+  - `python scripts/melt_stills.py` writes `out/review/melt_sheet.jpg`, four stills per transition,
+    for a look before rendering.
 - **Options:**
   - `--names "A · B · C · D"` fills the end card. The default is a marked placeholder.
   - `--music track.mp3 --bpm N` swaps in a real track; cuts snap to its beat.

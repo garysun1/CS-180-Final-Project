@@ -7,6 +7,7 @@ signature shot, and a style-glitch climax where a walker flashes through art sty
     python -m crossover.trailer --out out/trailer.mp4 --music track.mp3 --bpm 120   # your own music
     python -m crossover.trailer --edit teaser --size 960x540 --crf 23 --out out/teaser_wide.mp4
     python -m crossover.trailer --edit teaser --size 720x720 --crf 23 --out out/teaser_square.mp4
+    python -m crossover.trailer --edit melt --size 960x540 --crf 20 --out out/melt.mp4     # crossover/melt.py
 
 Every shot length is a whole number of beats (120 BPM = 15 frames at 30 fps), and the synthesized
 soundtrack is built on the same grid, so cuts, flashes and hits line up exactly.
@@ -1475,6 +1476,9 @@ def _hush(mix, t, beat_s):
 
 
 def soundtrack(shots, starts, n_frames, beat_s, seed=0):
+    if any(sh.section == "melt" for sh in shots):
+        from .melt import melt_soundtrack
+        return melt_soundtrack(shots, starts, n_frames, beat_s, seed)
     if any(sh.section == "teaser" for sh in shots):
         return teaser_soundtrack(shots, starts, n_frames, beat_s, seed)
     rng = np.random.default_rng(seed)
@@ -1698,8 +1702,8 @@ def main(argv=None):
     global W, H
     ap = argparse.ArgumentParser(description="Movie-trailer cut with beat-synced cuts and a style-glitch climax.")
     ap.add_argument("--out", default=f"{OUT}/trailer.mp4")
-    ap.add_argument("--edit", choices=["trailer", "teaser"], default="trailer",
-                    help="the ~55 s trailer, or the 15 s seamless loop")
+    ap.add_argument("--edit", choices=["trailer", "teaser", "melt"], default="trailer",
+                    help="the ~55 s trailer, the 15 s seamless loop, or the 16 s one-take melt loop")
     ap.add_argument("--size", default="960x540", help="output WxH, e.g. 960x540 or 720x720")
     ap.add_argument("--crf", type=int, default=18, help="x264 quality (lower is better and bigger)")
     ap.add_argument("--names", default=NAMES_PLACEHOLDER, help="the end card's names line")
@@ -1711,7 +1715,13 @@ def main(argv=None):
     W, H = parse_size(a.size)                                  # before any shot is built or set up
     beat_s = 60.0 / a.bpm
     fpb = FPS * beat_s
-    shots = edit_teaser() if a.edit == "teaser" else edit(a.names)
+    if a.edit == "melt":
+        from . import melt                                     # lazy: only the melt needs the morph ladders
+        if melt.T is not sys.modules[__name__]:                # run with -m, this file is __main__ and
+            melt.T.W, melt.T.H = W, H                          # melt.py imported its own copy of it
+        shots = melt.edit_melt(a.bpm)
+    else:
+        shots = edit_teaser() if a.edit == "teaser" else edit(a.names)
     if a.sections:
         keep = set(a.sections.split(","))
         shots = [s for s in shots if s.section in keep or s.name in keep]
@@ -1752,6 +1762,8 @@ def main(argv=None):
                     "t1": None if not src or src[2] is None else round(src[2], 3)})
         if sh.others(n) is not None:                           # everyone but her, on their own clock
             edl[-1]["others_t0"], edl[-1]["others_t1"] = (round(v, 3) for v in sh.others(n))
+        if hasattr(sh, "edl_extra"):                           # the melt's chapters: kind, chip, flashes
+            edl[-1].update(sh.edl_extra(n))
         print(f"[trailer] {k:2d} {sh.section:8s} {sh.name:22s} {n:4d} frames  {time.time() - ts:5.1f}s", flush=True)
     vw.close()
     audio = load_music(a.music, n_total) if a.music else soundtrack(shots, starts, n_total, beat_s, a.seed)
