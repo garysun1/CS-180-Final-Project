@@ -6,9 +6,10 @@ import { PlateCapture, fitColourField, toImageData } from './plate.js';
 import { PortalAudio } from './audio.js';
 
 const params = new URLSearchParams(location.search);
+// floodHint: after the first crossing, say once that holding floods (the hosted page)
 const CFG = Object.assign({
   camera: true, server: true, segmenter: true, muted: false, autostart: params.get('autostart') === '1',
-  scenes: null, startScene: 0,
+  scenes: null, startScene: 0, floodHint: false,
 }, window.PORTAL_CONFIG || {});
 const $ = (id) => document.getElementById(id);
 const canvas = $('view');
@@ -29,6 +30,11 @@ const LAYERS = [
   { view: 0, name: 'Result', note: 'one equation per pixel' },
 ];
 const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const PORTAL_SQUASH = 0.38;              // the portal ring lies on the ground
+// Hold to flood: a press held still for HOLD_MS and 3 drawn frames (moving less than SLOP_PX) opens a
+// flood. It covers the frame after FLOOD_GROW, takes over the rule over its first FLOOD_TAKE, drains over
+// FLOOD_DRAIN when let go, and stays (until the next tap) if it was held full for FLOOD_KEEP. Times in ms.
+const HOLD_MS = 280, SLOP_PX = 8, FLOOD_GROW = 1400, FLOOD_TAKE = 300, FLOOD_DRAIN = 600, FLOOD_KEEP = 500;
 
 const S = {
   worlds: SHADER_WORLDS.map((w) => ({ ...w })), world: 0, mode: Math.max(0, MODES.indexOf(params.get('mode') || 'line')),
@@ -36,12 +42,16 @@ const S = {
   glitchUntil: 0, autoGlitch: !REDUCED, autoCycle: false, lastCycle: 0, flash: 0, muted: !!CFG.muted,
   line: { x: 0.5, y: 0.5, angle: 0 }, portal: { x: 0.5, y: 0.78, r: 0.17 }, lens: { x: 0.5, y: 0.5, r: 0.2 },
   tau: 0.45, far: null,
+  // the seam: 'grow' (the world grows through its ladder, in a band band px wide at 768 on the line) or
+  // 'cut' (the exact 3-px seam)
+  seam: params.get('seam') === 'cut' ? 'cut' : 'grow', band: 120, prevW: null, slots: [null, null],
   source: params.get('source') === 'clip' || !CFG.camera ? 'clip' : 'camera', video: null,
   plate: null, plateData: null, capture: null, gain: 1,
   mask: null, segMs: 0, delegate: '', fps: 0, frames: 0, lastFpsT: performance.now(),
-  tracks: [], trackId: 0, burst: null, across: 0, crossings: 0, bursts: 0,
+  tracks: [], trackId: 0, burst: null, across: 0, crossings: 0, bursts: 0, burstLog: [],
   server: false, job: null, loaded: new Set(), log: [],
   scenes: [], scene: -1, layers: false, layer: -1, wave: null, waveHold: null, dragged: false,
+  flood: null, floods: 0, floodUsed: false, floodHinted: false,
 };
 let comp, seg = null, segmentFrame = null, audio;
 const work = document.createElement('canvas');
@@ -110,7 +120,7 @@ async function useSource(name, opts = {}) {
   S.mirror = name === 'camera' ? params.get('mirror') !== '0' : false;
   fitCanvas();
   S.plate = null; S.plateData = null; S.plateSmall = null; S.capture = null; S.gain = 1;
-  S.tracks = []; S.mask = null; S.burst = null;
+  S.tracks = []; S.mask = null; S.burst = null; S.flood = null; lastBlobs = [];
   scheduleSegmentation(true);
   if (opts.plate) setPlate(toImageData(opts.plate, w, h));
   else capturePlate(name === 'camera' ? 3 : 0);
@@ -138,7 +148,10 @@ function setPlate(image) {
   S.plateData = image;
   S.plateSmall = shrink(image, DW, Math.round(DW * canvas.height / canvas.width));
   comp.uploadImage(comp.tex.plate, image);
+  comp.setLadder(0, [image]);                     // rung 0 of every ladder
   S.plate = true;
+  S.slots = [null, null];
+  syncRungs();
   $('count').hidden = true;
   // worlds made on the spot are matched to this plate; worlds built offline keep their baked field
   for (const w of S.worlds) if (w.kind === 0 && w.img && !w.baked) setField(w, fitColourField(S.plateData, toImageData(w.img, canvas.width, canvas.height)));
@@ -313,7 +326,7 @@ function ruleWeight(x, y) {        // normalized camera coords -> 0 real .. 1 ot
   }
   if (S.mode === 1) {
     const r = S.portal.r * W * breath();
-    const q = Math.hypot((x - S.portal.x) * W / r, (y - S.portal.y) * H / (r * 0.38));
+    const q = Math.hypot((x - S.portal.x) * W / r, (y - S.portal.y) * H / (r * PORTAL_SQUASH));
     return Math.min(1, Math.max(0, (1 - q) / 0.06 + 0.5));
   }
   if (S.mode === 2) {
@@ -323,13 +336,113 @@ function ruleWeight(x, y) {        // normalized camera coords -> 0 real .. 1 ot
   if (S.mode === 4) return smooth01((farAt(x, y) - S.tau) / 0.06 + 0.5);
   return 1;
 }
+// Grow: how far the world has grown at a point, 0 .. 1 (compositor.js growU); people's colour follows it
+function ruleU(x, y) {
+  const W = canvas.width, H = canvas.height, s = W / 768, c01 = (v) => Math.min(1, Math.max(0, v));
+  if (S.mode === 0) {
+    const d = (x - S.line.x) * W * Math.cos(S.line.angle) + (y - S.line.y) * H * Math.sin(S.line.angle);
+    return c01(d / (S.band * s));
+  }
+  if (S.mode === 1) {
+    const r = S.portal.r * W * breath();
+    return c01((1 - Math.hypot((x - S.portal.x) * W / r, (y - S.portal.y) * H / (r * PORTAL_SQUASH))) / 0.6);
+  }
+  if (S.mode === 2) {
+    const R = S.lens.r * H;
+    return c01((R - Math.hypot((x - S.lens.x) * W, (y - S.lens.y) * H)) / (0.5 * R));
+  }
+  if (S.mode === 4) return c01((farAt(x, y) - S.tau) / 0.25);
+  return 1;
+}
 function breath() { return REDUCED ? 1 : 1 + 0.05 * Math.sin(performance.now() / 1000 * 2 * Math.PI / 3); }
+
+// ------------------------------------------------------------------ hold to flood
+// A press held still opens a flood: a ring of its own from where you press (from a walker's feet, if you
+// press on one), growing until it covers the frame, as in trailer.Flood.ring_at: radius (rMax + 160 px) *
+// (1 - (1 - u)^2.2), squash 0.38 -> 1. It takes over the rule as it opens (k: 0 the rule .. 1 the flood
+// alone) and gives it back as it drains, so neither end pops. S.flood: x, y its centre (frame, 0..1);
+// held (a pointer or O holds it); t0, u0, k0 (growing since t0 from u0, k0); tr, ur, kr (draining since
+// tr); keep (held full: it stays until the next tap); hold (tests: a fixed u, the rule taken over).
+function floodState(now) {
+  const f = S.flood; if (!f) return null;
+  let u, k;
+  if (f.hold != null) { u = f.hold; k = 1; }
+  else if (f.keep) { u = 1; k = 1; }
+  else if (f.held) {
+    const dt = Math.max(0, now - f.t0);
+    u = Math.min(1, f.u0 + dt / FLOOD_GROW); k = Math.min(1, f.k0 + dt / FLOOD_TAKE);
+  }
+  else {
+    const e = smooth01((now - f.tr) / FLOOD_DRAIN);
+    if (e >= 1) { S.flood = null; return null; }
+    u = f.ur * (1 - e); k = f.kr * (1 - e);
+  }
+  const W = canvas.width, H = canvas.height, s = W / 768, cx = f.x * W, cy = f.y * H;
+  const rMax = Math.max(Math.hypot(cx, cy), Math.hypot(W - cx, cy), Math.hypot(cx, H - cy), Math.hypot(W - cx, H - cy));
+  const r = (rMax + 160 * s) * (1 - Math.pow(1 - u, 2.2));
+  // band: Grow's morph band at the front, 160 px (the outer 60% while the ring is small), as a fraction of r
+  return { x: f.x, y: f.y, cx, cy, u, kLin: k, k: smooth01(k), r, sq: PORTAL_SQUASH + (1 - PORTAL_SQUASH) * smooth01(u),
+           band: Math.min(0.6, 160 * s / Math.max(r, 1e-3)) };
+}
+// the flood at a point (frame coords): Cut's weight (a 3-px edge) and Grow's u (its band), as the shader
+function floodAt(fl, x, y) {
+  const s = canvas.width / 768, d = fl.r - Math.hypot(x * canvas.width - fl.cx, (y * canvas.height - fl.cy) / fl.sq);
+  return { w: Math.min(1, Math.max(0, d / (3 * s) + 0.5)), u: Math.min(1, Math.max(0, d / Math.max(1e-3, fl.band * fl.r))) };
+}
+// A person's rule weight w (Cut's, which crossings use) and Grow's u (their colour), from where they
+// stand: the lens by their centre, the other rules by their feet. A flood goes by the feet and takes over.
+function personRule(b, fl) {
+  const fy = Math.min(0.999, b.fy), [x, y] = S.mode === 2 ? [b.cx, b.cy] : [b.fx, fy];
+  let w = ruleWeight(x, y), u = ruleU(x, y);
+  if (fl) {
+    const f = floodAt(fl, b.fx, fy);
+    w = Math.max(f.w, (1 - fl.k) * w); u = Math.max(f.u, (1 - fl.k) * u);
+  }
+  return { w, u };
+}
+// Start holding a flood at (x, y), as of time `at`; snap: on the feet of the walker whose box holds the
+// point. A flood still on screen is picked up instead: it keeps its centre and grows on from where it is.
+function holdFlood(x, y, by, snap = true, at = performance.now()) {
+  if (S.mode === 3 || S.layers || !S.plate || (S.flood && S.flood.held)) return false;
+  const cur = floodState(at);
+  if (cur) Object.assign(S.flood, { held: true, by, t0: at, u0: cur.u, k0: cur.kLin, keep: false, hold: null, fresh: false });
+  else {
+    const area = (b) => (b[2] - b[0]) * (b[3] - b[1]);
+    const t = snap && S.tracks.filter((t) => t.box && t.fx != null && x >= t.box[0] && x <= t.box[2] && y >= t.box[1] && y <= t.box[3])
+      .sort((a, b) => area(a.box) - area(b.box))[0];
+    S.flood = { x: t ? t.fx : x, y: t ? Math.min(0.999, t.fy) : y, held: true, by, t0: at, u0: 0, k0: 0, fresh: true };
+  }
+  S.flood.from = [S.flood.x, S.flood.y, x, y];          // moving steers it, relative to the press
+  S.floodUsed = true; S.floods++;
+  return true;
+}
+function steerFlood(x, y) {
+  const f = S.flood; if (!f || !f.held || !f.from) return;
+  f.x = Math.min(1, Math.max(0, f.from[0] + x - f.from[2]));
+  f.y = Math.min(1, Math.max(0, f.from[1] + y - f.from[3]));
+}
+// Let go at time `at`: it drains back, unless keepIfFull and it was held full for FLOOD_KEEP (then it
+// stays, until a tap).
+function releaseFlood(keepIfFull, at = performance.now()) {
+  const f = S.flood;
+  if (!f) return;
+  at = Math.max(at, f.t0 || 0);
+  const cur = floodState(at);
+  if (!cur) return;
+  const full = f.held && f.hold == null && f.u0 + (at - f.t0) / FLOOD_GROW >= 1 + FLOOD_KEEP / FLOOD_GROW;
+  if (keepIfFull && (full || f.keep)) { Object.assign(f, { held: false, keep: true }); return; }
+  Object.assign(f, { held: false, keep: false, hold: null, tr: at, ur: cur.u, kr: cur.kLin });
+  setTimeout(() => { if (S.flood === f && !f.held && !f.keep && f.hold == null) S.flood = null; },
+             Math.max(0, at + FLOOD_DRAIN + 20 - performance.now()));
+}
 
 // People as blobs on a coarse grid, tracked across frames. Each gets one weight from where they stand
 // (portal and depth rules), and a crossing (a person going from real to the other world) plays a
-// whoosh and, for a person-shaped track, a short style burst on that person only.
+// whoosh and, for a person-shaped track, a short style burst on that person only. Crossings always use
+// the binary rule (w), so they fire at the line in Grow too; Grow's per-person colour is u at the feet.
+// While a flood is open, it decides for everyone by their feet, so crossings and bursts follow its front.
 const GW = 160;
-let pwU8 = null;
+let pwU8 = null, lastBlobs = [];
 function analysePeople() {
   const m = S.mask; if (!m) return;
   const GH = Math.round(GW * m.h / m.w);
@@ -359,11 +472,11 @@ function analysePeople() {
                  box: [minx / GW, miny / GH, (maxx + 1) / GW, (maxy + 1) / GH], hw: (maxy - miny + 1) / (maxx - minx + 1) });
   }
   // track (nearest centroid; tracks keep their id), smooth each person's weight, detect crossings
-  const prev = S.tracks, next = [], now = performance.now();
+  const prev = S.tracks, next = [], now = performance.now(), fl = floodState(now);
   for (const t of prev) t.used = false;
   let massIn = 0, mass = 0;
   for (const b of blobs) {
-    const raw = S.mode === 2 ? ruleWeight(b.cx, b.cy) : ruleWeight(b.fx, Math.min(0.999, b.fy));
+    const { w: raw, u: rawU } = personRule(b, fl);
     // match the nearest track; the reach grows with the time since it was seen (a slow device analyses
     // fewer frames, and a walker covers about 0.15 of the frame per second)
     let best = null, bd = Infinity;
@@ -372,16 +485,17 @@ function analysePeople() {
       const d = Math.hypot(t.cx - b.cx, t.cy - b.cy), reach = 0.08 + 0.25 * Math.min(1, (now - t.seen) / 1000);
       if (d < reach && d < bd) { best = t; bd = d; }
     }
-    const t = best || { id: ++S.trackId, w: raw, inside: raw > 0.5, lastBurst: 0 };
+    const t = best || { id: ++S.trackId, w: raw, u: rawU, inside: raw > 0.5, lastBurst: 0 };
     t.used = true; t.seen = now;
-    t.cx = b.cx; t.cy = b.cy; t.w = 0.65 * t.w + 0.35 * raw;
-    t.cnt = b.cnt; t.frac = b.cnt / (GW * GH); t.box = b.box; t.hw = b.hw;
+    const kw = fl ? 0.7 : 0.35;                  // a flood's front moves fast and one way: follow it closely
+    t.cx = b.cx; t.cy = b.cy; t.w = (1 - kw) * t.w + kw * raw; t.u = (1 - kw) * t.u + kw * rawU;
+    t.cnt = b.cnt; t.frac = b.cnt / (GW * GH); t.box = b.box; t.hw = b.hw; t.fx = b.fx; t.fy = b.fy;
     if (!t.inside && t.w > 0.7 && best) onCrossing(t);
     if (t.w > 0.7) t.inside = true; else if (t.w < 0.3) t.inside = false;
-    b.w = t.w; next.push(t);
+    b.w = t.w; b.u = t.u; next.push(t);
     massIn += b.cnt * t.w; mass += b.cnt;
   }
-  S.tracks = next;
+  S.tracks = next; lastBlobs = blobs;
   if (S.burst && !S.burst.fixed) {               // the burst box follows its person
     const t = next.find((x) => x.id === S.burst.id);
     if (t) { S.burst.box = padBox(t.box); S.burst.seen = now; }
@@ -389,21 +503,29 @@ function analysePeople() {
   }
   S.across = mass ? massIn / mass : 0;
   const a = aud(); if (a) a.setAcross(S.across);
-  if (S.mode === 1 || S.mode === 4) {
-    if (!pwU8 || pwU8.length !== GW * GH) pwU8 = new Uint8Array(GW * GH);
-    pwU8.fill(0);
-    for (const b of blobs) {
-      const v = Math.round(b.w * 255);
-      for (const j of b.cells) {
-        const x = j % GW, y = (j / GW) | 0;
-        for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
-          const xx = x + dx, yy = y + dy;
-          if (xx >= 0 && yy >= 0 && xx < GW && yy < GH) pwU8[yy * GW + xx] = Math.max(pwU8[yy * GW + xx], v);
-        }
+  // (while a flood is open, render() uploads them every frame, fresh from its moving front)
+  if ((S.mode === 1 || S.mode === 4) && !fl) uploadPW(blobs, (b) => (S.seam === 'grow' ? b.u : b.w));
+}
+// The per-person weights (uPW) on the GW grid: each person's cells, grown by 2, hold value(blob) in 0..1
+// (r) and 255 (g: a person is here; compositor.js feetAt).
+function uploadPW(blobs, value) {
+  const m = S.mask; if (!m) return;
+  const GH = Math.round(GW * m.h / m.w);
+  if (!pwU8 || pwU8.length !== 2 * GW * GH) pwU8 = new Uint8Array(2 * GW * GH);
+  pwU8.fill(0);
+  for (const b of blobs) {
+    const v = Math.round(value(b) * 255);
+    for (const j of b.cells) {
+      const x = j % GW, y = (j / GW) | 0;
+      for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+        const xx = x + dx, yy = y + dy;
+        if (xx < 0 || yy < 0 || xx >= GW || yy >= GH) continue;
+        const i = 2 * (yy * GW + xx);
+        pwU8[i] = Math.max(pwU8[i], v); pwU8[i + 1] = 255;
       }
     }
-    comp.uploadR8(comp.tex.pw, pwU8, GW, GH);
   }
+  comp.uploadRG8(comp.tex.pw, pwU8, GW, GH);
 }
 function onCrossing(t) {
   const now = performance.now();
@@ -411,6 +533,7 @@ function onCrossing(t) {
     S.lastCrossT = now; S.crossings++;
     const a = aud(); if (a && !S.muted) a.whoosh();
   }
+  if (CFG.floodHint && !S.floodHinted && !S.floodUsed && !S.layers) { S.floodHinted = true; toast('Hold to flood.', 3000); }
   if (!S.autoGlitch || S.layers) return;
   // a person, not a car or a merged crowd: upright, and between 0.5% and 8% of the frame
   if (t.hw < 1.3 || t.frac < 0.005 || t.frac > 0.08) return;
@@ -424,6 +547,7 @@ const padBox = (b) => [Math.max(0, b[0] - 0.04), Math.max(0, b[1] - 0.04), Math.
 function startBurst(t, ms, seed, fixed = false) {
   const now = performance.now();
   t.lastBurst = now; S.lastBurstT = now; S.bursts++;
+  S.burstLog.push(now); if (S.burstLog.length > 32) S.burstLog.shift();     // (tests: the spacing of bursts)
   const box = padBox(t.box);
   const big = (box[2] - box[0]) * (box[3] - box[1]) > 0.10;
   const sched = [];
@@ -448,7 +572,9 @@ function burstState(now) {
   if (el >= b.ms) { S.burst = null; return null; }
   let i = 0;
   while (i + 1 < b.sched.length && b.sched[i + 1] <= el) i++;
-  return { box: b.box, per: b.styles[i], edge: el - b.sched[i] < 70 };
+  // c: in Grow the crosser's colour is in full during the burst, easing back to the rule's own over
+  // its last quarter, so the landing does not pop
+  return { box: b.box, per: b.styles[i], edge: el - b.sched[i] < 70, c: 1 - smooth01((el / b.ms - 0.75) / 0.25) };
 }
 
 // ------------------------------------------------------------------ worlds
@@ -472,12 +598,56 @@ function stepWorld(d) { const o = visualOrder(); setWorld(o[(o.indexOf(S.world) 
 function setWorld(i, quiet = false) {
   if (i < 0 || i >= S.worlds.length) return;
   const old = currentWorld();
-  if (!quiet && !REDUCED && comp && S.plate && old && i !== S.world) {
-    S.wave = { t0: performance.now(), prevKind: old.kind, prevTex: old.tex };   // roll in from the horizon
-  } else if (!quiet) flash(0.25);
+  if (old && i !== S.world) S.prevW = old;
   S.world = i;
+  syncRungs();
+  if (!quiet && !REDUCED && comp && S.plate && old && old !== currentWorld()) {   // roll in from the horizon
+    endWave();
+    S.wave = { t0: performance.now(), prevKind: old.kind, prevTex: old.tex, prevW: old, prevPattern: old.pattern,
+               field: waveField(currentWorld(), old) };
+  } else if (!quiet) flash(0.25);
   const a = aud(); if (a) a.setWorld(i);
   if (!quiet) toast(worldLabel(S.worlds[i]));
+  renderControls();
+}
+// A generated world's ladder (scenes.json worlds[i].ladder): the rung images between the plate and the
+// world. Only the current world and the one before it are on the GPU (a world change unmakes the old
+// world through its own rungs), in the two slots of the compositor's ladder texture. A world without
+// rungs (made on the spot, or dropped in) grows straight from the plate: one step.
+function syncRungs() {
+  if (!comp || !S.plate) return;
+  const want = [currentWorld(), S.prevW].filter((w) => w && w.kind === 0 && w.img);
+  for (const w of want) {
+    if (S.slots.includes(w)) continue;
+    const s = want.includes(S.slots[0]) ? 1 : 0;
+    const imgs = [...(w.ladder || []).slice(0, 2).map((r) => r.img), w.img];
+    comp.setLadder(1 + 3 * s, imgs.map((im) => toImageData(im, canvas.width, canvas.height)));
+    S.slots[s] = w;
+  }
+}
+// Grow keeps people behind a world change's front in the old world's colour: both colour fields in one
+// texture for the wave's 1.4 s (an old filter world colours people with its own filter instead).
+function waveField(cur, old) {
+  if (old.kind !== 0) return null;
+  const id = { gx: 1, gy: 1, coeffs: IDENTITY_FIELD };
+  return comp.newWaveField(cur.fieldData || id, old.fieldData || id);
+}
+function endWave() {
+  if (S.wave && S.wave.field) comp.gl.deleteTexture(S.wave.field.tex);
+  S.wave = null;
+}
+function ladderOf(w) {                   // {n steps above the plate, slot}; n 0: not loaded
+  const s = w ? S.slots.indexOf(w) : -1;
+  return s < 0 ? { n: 0, slot: 0 } : { n: Math.min(2, (w.ladder || []).length) + 1, slot: s };
+}
+function setSeam(s, quiet = false) {
+  S.seam = s === 'cut' ? 'cut' : 'grow';
+  // the per-person weights hold the seam's own value (Grow's u, Cut's w): swap them now, or a paused
+  // frame keeps the other seam's until the next analysed frame (a flood re-uploads them every frame)
+  if (comp && (S.mode === 1 || S.mode === 4) && !floodState(performance.now())) {
+    uploadPW(lastBlobs, (b) => (S.seam === 'grow' ? b.u : b.w));
+  }
+  if (!quiet) toast(S.seam === 'grow' ? 'Morph: the world grows out of the filmed scene' : 'Cut: the exact seam');
   renderControls();
 }
 function setMode(m, quiet = false) {
@@ -488,10 +658,16 @@ function setMode(m, quiet = false) {
 function setField(w, coeffs, gx = 1, gy = 1) {
   if (w.field) comp.gl.deleteTexture(w.field.tex);
   w.field = comp.newField(gx, gy, coeffs);
+  w.fieldData = { gx, gy, coeffs };
 }
-async function addImageWorld(name, src, url, { quiet = false, group = 'generated', colour = null, gen = null } = {}) {
+// ladder: [{img, n, src}] rung images from the plate's side (see syncRungs); pattern: 'dots' grows its
+// detail in halftone dots (Cyberpunk, Comic)
+async function addImageWorld(name, src, url, { quiet = false, group = 'generated', colour = null, gen = null,
+                                              ladder = null, pattern = null } = {}) {
   const bmp = src instanceof ImageBitmap ? src : await createImageBitmap(src);
-  const w = { name, kind: 0, img: bmp, url, group, gen, baked: !!colour, field: null };
+  const w = { name, kind: 0, img: bmp, url, group, gen, baked: !!colour, field: null,
+              ladder: (ladder || []).map((r) => ({ img: r.img, n: r.n, src: r.src })),
+              pattern: pattern || (/cyberpunk|comic/i.test(name) ? 'dots' : 'noise') };
   const data = toImageData(bmp, canvas.width, canvas.height);
   w.tex = comp.newTexture();
   comp.uploadImage(w.tex, data);
@@ -503,7 +679,7 @@ async function addImageWorld(name, src, url, { quiet = false, group = 'generated
   return S.worlds.length - 1;
 }
 function removeImageWorlds() {           // image worlds belong to one view; drop them when the view changes
-  S.wave = null;
+  endWave(); S.prevW = null; S.slots = [null, null];
   for (const w of S.worlds) if (w.kind === 0) {
     if (w.tex) comp.gl.deleteTexture(w.tex);
     if (w.field) comp.gl.deleteTexture(w.field.tex);
@@ -526,10 +702,11 @@ async function loadScene(i) {
   const g = ++sceneGen;
   toast(`Loading ${sc.name}…`, 20000);
   try {
-    const [clip, plate, far, ...worlds] = await Promise.all([
-      fetchBlob(sc.clip), fetchBlob(sc.plate).then((b) => createImageBitmap(b)),
+    const bitmap = (src) => fetchBlob(src).then((b) => createImageBitmap(b));
+    const [clip, plate, far, ...worlds] = await Promise.all([         // each world: [image, ...its rungs]
+      fetchBlob(sc.clip), bitmap(sc.plate),
       sc.far ? fetchBlob(sc.far).then((b) => decodeFar(b, sc.farGmax || 0.02)) : null,
-      ...sc.worlds.map((w) => fetchBlob(w.src).then((b) => createImageBitmap(b)))]);
+      ...sc.worlds.map((w) => Promise.all([bitmap(w.src), ...(w.ladder || []).map((r) => bitmap(r.src))]))]);
     if (g !== sceneGen) return;
     removeImageWorlds();
     S.scene = i;
@@ -540,8 +717,9 @@ async function loadScene(i) {
     if (sc.portal) Object.assign(S.portal, sc.portal);
     if (sc.tau != null) S.tau = sc.tau;
     for (let k = 0; k < worlds.length; k++) {
-      const w = sc.worlds[k];
-      await addImageWorld(w.name, worlds[k], w.src, { quiet: true, colour: w.colour, gen: w.gen });
+      const w = sc.worlds[k], [img, ...rungs] = worlds[k];
+      const ladder = (w.ladder || []).map((r, j) => ({ img: rungs[j], n: r.n, src: r.src }));
+      await addImageWorld(w.name, img, w.src, { quiet: true, colour: w.colour, gen: w.gen, ladder, pattern: w.pattern });
     }
     const start = S.worlds.findIndex((w) => w.kind === 0 && w.name === sc.startWorld);
     setWorld(start >= 0 ? start : visualOrder()[0], true);
@@ -626,29 +804,44 @@ function render(now, over = {}) {
   const v = S.video;
   if (!comp || !v) return false;
   if (v.readyState >= 2) comp.uploadImage(comp.tex.cam, v);
-  else if (over.view == null) return false;       // (a forced view such as the parity view needs no camera frame)
-  if (S.autoCycle && now - S.lastCycle > 6000 && !over.view) { S.lastCycle = now; stepWorld(1); }
+  else if (over.view == null && over.rung == null) return false;   // (a forced view needs no camera frame)
+  if (S.autoCycle && now - S.lastCycle > 6000 && !over.view && over.rung == null) { S.lastCycle = now; stepWorld(1); }
   const W = canvas.width, H = canvas.height, w = currentWorld();
-  let bg = w.kind, per = w.kind, worldTex = w.tex, field = w.field;
+  let bg = w.kind, per = w.kind, worldTex = w.tex, field = w.field, lad = ladderOf(w), pattern = w.pattern;
   let glitch = 0;
   if (now < S.glitchUntil) {             // the manual glitch: the person flashes through worlds, the frame tears
     glitch = 1;
     const kinds = [w.kind, 1, 2, 3, 4, 5, 6];
     per = kinds[(Math.random() * kinds.length) | 0];
-    if (Math.random() < 0.15) { const kb = S.worlds[(Math.random() * S.worlds.length) | 0]; bg = kb.kind; worldTex = kb.tex; }
+    if (Math.random() < 0.15) {
+      const kb = S.worlds[(Math.random() * S.worlds.length) | 0];
+      bg = kb.kind; worldTex = kb.tex; lad = ladderOf(kb); pattern = kb.pattern;
+    }
   }
   if (bg === 0 && !worldTex) bg = 1;
   const bs = burstState(now);
+  // the world-change wave: Cut rolls a thin front over 1.2 s; Grow a 0.30-farness front over 1.4 s
+  const grow = S.seam === 'grow';
   let wave = null;
   if (S.wave) {
-    const u = S.waveHold != null ? S.waveHold : (now - S.wave.t0) / 1200;
-    if (u >= 1 && S.waveHold == null) S.wave = null;
-    else wave = 1.08 - 1.2 * smooth01(Math.min(1, u) * 1.15);
+    const u = S.waveHold != null ? S.waveHold : (now - S.wave.t0) / (grow ? 1400 : 1200);
+    if (u >= 1 && S.waveHold == null) endWave();
+    else wave = grow ? 1.25 - 1.5 * smooth01(u * 1.1) : 1.08 - 1.2 * smooth01(Math.min(1, u) * 1.15);
   }
+  if (grow && wave != null && S.wave.field) field = S.wave.field;
+  // a flood: everyone by their feet, fresh from its front every frame (the clip may be paused)
+  holdCheck(now);
+  const fl = floodState(now);
+  floodShown = fl ? fl.k : 0;
+  if (fl) uploadPW(lastBlobs, (b) => { const r = personRule(b, fl); return grow ? r.u : r.w; });
+  floodSound(fl);
   const p = {
     bg, per, worldTex, field, mode: S.mode,
+    seam: grow, band: S.band, lad, pattern, prevLad: S.wave ? ladderOf(S.wave.prevW) : null,
+    prevPattern: S.wave && S.wave.prevPattern, perPrev: S.wave ? S.wave.prevKind : -1, burstC: bs ? bs.c : 1,
     p0: [S.line.x * W, S.line.y * H], n: [Math.cos(S.line.angle), Math.sin(S.line.angle)],
-    portal: [S.portal.x * W, S.portal.y * H, S.portal.r * W * breath()], squash: 0.38,
+    portal: [S.portal.x * W, S.portal.y * H, S.portal.r * W * breath()], squash: PORTAL_SQUASH,
+    flood: fl && [fl.cx, fl.cy, fl.r], floodSq: fl ? fl.sq : 1, floodBand: fl ? fl.band : 0.6, floodK: fl ? fl.k : 0,
     lens: [S.lens.x * W, S.lens.y * H], lensR: S.lens.r * H,
     glitch, seed: Math.random() * 100, flash: S.flash, mirror: S.mirror, debug: S.debug,
     hasPlate: !!S.plate, diff: S.diff, gain: S.gain,
@@ -656,7 +849,9 @@ function render(now, over = {}) {
     waveOn: wave != null, wave, prevKind: S.wave && S.wave.prevKind, prevTex: S.wave && S.wave.prevTex,
     burst: !!bs, burstBox: bs && bs.box, burstPer: bs ? bs.per : -1, burstEdge: bs && bs.edge,
   };
-  if (over.view != null) {
+  if (over.rung != null) {               // the background alone at a ladder rung (exposure gain 1)
+    comp.draw({ ...p, view: 0, flash: 0, glitch: 0, seam: true, waveOn: false, forceRung: over.rung, gain: 1 });
+  } else if (over.view != null) {
     comp.draw({ ...p, view: over.view, flash: 0 });
   } else if (S.layers) {
     comp.clear();
@@ -673,9 +868,15 @@ function render(now, over = {}) {
     const dbg = S.debug ? ` · ${S.fps.toFixed(0)} fps · mask ${S.segMs.toFixed(0)} ms (${S.delegate}) · gain ${S.gain.toFixed(2)}` : '';
     const where = S.scenes[S.scene] ? ` · ${S.scenes[S.scene].name}` : S.source === 'clip' ? ' · recorded clip' : '';
     const view = S.layers ? ' · layers' : '';
-    $('hudsub').textContent = `${displayName(w)} · ${MODES[S.mode]}${where}${view}${S.progress ? ' · ' + S.progress : ''}${dbg}`;
+    $('hudsub').textContent = `${displayName(w)} · ${MODES[S.mode]}${fl ? ' · flood' : ''}${where}${view}${S.progress ? ' · ' + S.progress : ''}${dbg}`;
   }
   return true;
+}
+// the flood's sound follows its growth (0 lets it go); the master gain mutes it like the rest
+let floodLevel = 0, floodShown = 0;
+function floodSound(fl) {
+  const a = aud(), v = fl ? fl.u : 0;
+  if (a && (v > 0 || floodLevel > 0)) { a.flood(v); floodLevel = v; }
 }
 
 // ------------------------------------------------------------------ on-canvas DOM: line handle, side tags, layer labels
@@ -685,7 +886,7 @@ function placeOverlays() {
   if (!handle && !labels) return;
   const st = $('stage').getBoundingClientRect(), r = canvas.getBoundingClientRect();
   const sx = r.width / canvas.width, ox = r.left - st.left, oy = r.top - st.top;
-  const showLine = !S.layers && S.mode === 0 && !!S.plate;
+  const showLine = !S.layers && S.mode === 0 && !!S.plate && floodShown < 0.5;     // (a flood has taken over)
   if (handle) {
     handle.hidden = !showLine; tagA.hidden = !showLine; tagB.hidden = !showLine;
     if (showLine) {
@@ -756,7 +957,13 @@ function tileAt(e) {                             // tiles are laid out on screen
   const x = (e.clientX - r.left) / r.width * canvas.width, y = (e.clientY - r.top) / r.height * canvas.height;
   return tileRects().findIndex((t) => x >= t.x && x < t.x + t.w && y >= t.y && y < t.y + t.h);
 }
-let dragging = false;
+// A press is a tap (placed on release: the line, ring, lens or depth contour goes there), a drag (once it
+// moves more than SLOP_PX: the rule follows, as before), or, held still for HOLD_MS and at least 3 drawn
+// frames, a flood (moving then steers it). A tap while a flood stays lets it drain. One pointer at a
+// time. Moves arrive with frames, so the frame count keeps a drag a drag on a slow page (at 60 fps it
+// adds nothing); an event from before the hold was seen still counts as before it.
+let press = null;                                // {id, sx, sy (client px), x, y (frame), t, f, kind, at}
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());     // a long press floods; no menu
 canvas.addEventListener('pointerdown', (e) => {
   if (S.layers) {                                // tap a tile to see it full size; tap again to go back
     if (narrowStage()) S.layer = (S.layer + 1) % LAYERS.length;
@@ -764,13 +971,64 @@ canvas.addEventListener('pointerdown', (e) => {
     else S.layer = tileAt(e);
     return;
   }
-  dragging = true; canvas.setPointerCapture(e.pointerId); onPointer(e);
-});
-canvas.addEventListener('pointerup', () => { if (dragging && S.mode === 0) S.dragged = true; dragging = false; });
-canvas.addEventListener('pointercancel', () => { dragging = false; });
-canvas.addEventListener('pointermove', (e) => { if (!S.layers && (dragging || (S.mode === 2 && e.pointerType === 'mouse'))) onPointer(e); });
-function onPointer(e) {
+  if (press) {                                   // a second finger is ignored; a press that never ended is
+    if (press.id !== e.pointerId && canvas.hasPointerCapture(press.id)) return;
+    endPress({ pointerId: press.id, timeStamp: e.timeStamp }, true);
+  }
+  try { canvas.setPointerCapture(e.pointerId); } catch { /* not an active pointer (a synthetic event) */ }
   const [x, y] = toFrame(e);
+  press = { id: e.pointerId, sx: e.clientX, sy: e.clientY, x, y, t: performance.now(), f: S.frames, kind: 'tap' };
+});
+// (each frame, from render) the press has been held still long enough: a flood, from now
+function holdCheck(now) {
+  const p = press;
+  if (p && p.kind === 'tap' && now - p.t >= HOLD_MS && S.frames - p.f >= 3 && holdFlood(p.x, p.y, 'pointer')) {
+    p.kind = 'flood'; p.at = S.flood.t0;
+  }
+}
+// the move or release that ends the hold happened before the hold was seen: no flood after all (one it
+// picked up drains)
+function unhold(p, at) {
+  const fresh = !!(S.flood && S.flood.fresh);
+  if (fresh) S.flood = null; else releaseFlood(false, at);
+  p.kind = 'tap';
+  return fresh;
+}
+canvas.addEventListener('pointermove', (e) => {
+  if (S.layers) return;
+  const p = press;
+  if (p && e.pointerId === p.id) {
+    const moved = Math.hypot(e.clientX - p.sx, e.clientY - p.sy) > SLOP_PX;
+    if (p.kind === 'flood' && moved && e.timeStamp < p.at) unhold(p, e.timeStamp);
+    if (p.kind === 'tap' && moved) {
+      p.kind = 'drag';
+      if (S.flood && S.flood.keep) releaseFlood(false, e.timeStamp);   // moving the rule lets a flood that stays go
+    }
+    if (p.kind === 'drag') onPointer(e);
+    else if (p.kind === 'flood') steerFlood(...toFrame(e));
+  } else if (S.mode === 2 && e.pointerType === 'mouse') onPointer(e);   // the lens follows the mouse
+});
+function endPress(e, cancelled) {
+  const p = press;
+  if (!p || e.pointerId !== p.id) return;
+  press = null;
+  if (p.kind === 'flood' && e.timeStamp < p.at && !cancelled) {   // a tap after all: it places, unless it
+    if (unhold(p, e.timeStamp)) place(p.x, p.y);             // let a flood it picked up go
+    if (S.mode === 0) S.dragged = true;
+    return;
+  }
+  if (p.kind === 'flood') { releaseFlood(true, e.timeStamp); return; }
+  if (p.kind === 'tap' && !cancelled) {
+    if (S.flood && S.flood.keep) releaseFlood(false, e.timeStamp);
+    else place(p.x, p.y);
+  }
+  if (!cancelled && S.mode === 0) S.dragged = true;
+}
+canvas.addEventListener('pointerup', (e) => endPress(e, false));
+canvas.addEventListener('pointercancel', (e) => endPress(e, true));
+canvas.addEventListener('lostpointercapture', (e) => endPress(e, true));
+function onPointer(e) { place(...toFrame(e)); }
+function place(x, y) {
   if (S.mode === 0) { S.line.x = x; S.line.y = y; }
   else if (S.mode === 1) { S.portal.x = x; S.portal.y = y; }
   else if (S.mode === 2) { S.lens.x = x; S.lens.y = y; }
@@ -779,6 +1037,10 @@ function onPointer(e) {
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
   const k = e.deltaY > 0 ? 0.92 : 1.08;
+  if (S.mode === 0 && S.seam === 'grow') {       // the morph band on the line: 24 .. 420 px (at 768 wide)
+    S.band = Math.min(420, Math.max(24, S.band * k));
+    toast(`Morph band ${Math.round(S.band)} px`, 1200);
+  }
   if (S.mode === 1) S.portal.r = Math.min(0.6, Math.max(0.05, S.portal.r * k));
   if (S.mode === 2) S.lens.r = Math.min(0.8, Math.max(0.05, S.lens.r * k));
   if (S.mode === 4) S.tau = Math.min(0.98, Math.max(0.02, S.tau + (e.deltaY > 0 ? -0.02 : 0.02)));
@@ -792,6 +1054,7 @@ function toggleSound() {
   toast(S.muted ? 'Sound off' : 'Sound on');
   renderControls();
 }
+function toggleSeam() { setSeam(S.seam === 'grow' ? 'cut' : 'grow'); }
 function toggleLayers(on) {
   S.layers = on === undefined ? !S.layers : on;
   S.layer = S.layers && narrowStage() ? 0 : -1;
@@ -826,6 +1089,8 @@ addEventListener('keydown', (e) => {
   else if (k === 'd') S.debug = !S.debug;
   else if (k === 't') { S.diff = !S.diff; toast(`Hole filling ${S.diff ? 'on' : 'off'}`); }
   else if (k === 's') toggleSound();
+  else if (k === 'e') toggleSeam();
+  else if (k === 'o') { if (!e.repeat) keyFlood(true, e.timeStamp); }
   else if (k === 'f') toggleFullscreen();
   else if (k === 'escape' && $('help') && !$('help').hidden) toggleHelp(false);
   else if (k === 'escape' && S.layers) { if (S.layer >= 0 && !narrowStage()) S.layer = -1; else toggleLayers(false); }
@@ -835,6 +1100,19 @@ addEventListener('keydown', (e) => {
   else if (e.key === 'ArrowLeft') S.line.x = Math.max(0, S.line.x - 0.01);
   else if (e.key === 'ArrowRight') S.line.x = Math.min(1, S.line.x + 0.01);
 });
+// O: hold to flood from the centre of the frame (the kiosk's press and hold); O again lets one that stays go
+let keyHeld = false;
+function keyFlood(down, at = performance.now()) {
+  if (down) {
+    if (S.flood && S.flood.keep) { releaseFlood(false, at); keyHeld = false; }
+    else keyHeld = holdFlood(0.5, 0.5, 'key', false, at);
+  } else if (keyHeld) {
+    keyHeld = false;
+    if (S.flood && S.flood.held && S.flood.by === 'key') releaseFlood(true, at);
+  }
+}
+addEventListener('keyup', (e) => { if (e.key.toLowerCase() === 'o') keyFlood(false, e.timeStamp); });
+addEventListener('blur', () => keyFlood(false));
 async function takeFile(f) {
   if (!f) return;
   if (f.type.startsWith('video/')) await useVideoFile(f);
@@ -861,6 +1139,7 @@ function renderControls() {
   if ($('b-cycle')) $('b-cycle').setAttribute('aria-pressed', String(S.autoCycle));
   if ($('b-layers')) $('b-layers').setAttribute('aria-pressed', String(S.layers));
   if ($('b-sound')) { $('b-sound').setAttribute('aria-pressed', String(!S.muted)); $('b-sound').textContent = S.muted ? 'Sound off' : 'Sound on'; }
+  if ($('b-seam')) $('b-seam').setAttribute('aria-pressed', String(S.seam === 'grow'));
   const box = $('worlds');
   if (box) {
     const titles = { generated: 'AI-generated · made once', yours: 'Your images', filter: 'Filters (no AI)' };
@@ -888,6 +1167,7 @@ function bindControls() {
   for (const b of document.querySelectorAll('[data-mode]')) b.addEventListener('click', () => setMode(+b.dataset.mode));
   const on = (id, fn) => { if ($(id)) $(id).addEventListener('click', fn); };
   on('b-glitch', glitchBurst); on('b-cycle', toggleCycle); on('b-sound', toggleSound); on('b-layers', () => toggleLayers());
+  on('b-seam', toggleSeam);
   on('b-full', toggleFullscreen); on('b-help', () => toggleHelp()); on('help-close', () => toggleHelp(false));
   on('b-upload', () => {
     toast('Pick a clip from a fixed camera (a tripod or a propped phone) with people walking through. MP4 works best.', 5000);
@@ -938,6 +1218,33 @@ function readFrame() {
   const { px, w, h } = comp.readPixels();
   return { px, w, h, at: (x, y) => 4 * ((h - 1 - y) * w + x) };      // GL rows are bottom-up
 }
+// mean |output - camera| (0-255) over columns [x0, x1) and rows [y0, y1) (fractions), every 2nd pixel
+function diffCamera(x0, x1, y0, y1) {
+  const { px, w, h } = comp.readPixels();
+  wctx.drawImage(S.video, 0, 0, w, h);
+  const cam = wctx.getImageData(0, 0, w, h).data;
+  let sum = 0, n = 0;
+  for (let y = Math.floor(y0 * h); y < Math.floor(y1 * h); y += 2) for (let x = Math.floor(x0 * w); x < Math.floor(x1 * w); x += 2) {
+    const xo = S.mirror ? w - 1 - x : x;
+    const i = 4 * ((h - 1 - y) * w + xo), j = 4 * (y * w + x);
+    sum += Math.abs(px[i] - cam[j]) + Math.abs(px[i + 1] - cam[j + 1]) + Math.abs(px[i + 2] - cam[j + 2]); n += 3;
+  }
+  return n ? sum / n : 0;
+}
+// mean |page - reference image| (0-255) of what was just drawn, every 2nd pixel
+function diffImage(ref) {
+  const { px, w, h, at } = readFrame();
+  let sum = 0, n = 0;
+  for (let y = 0; y < h; y += 2) for (let x = 0; x < w; x += 2) {
+    const i = at(x, y), j = 4 * (y * w + x);
+    sum += Math.abs(px[i] - ref[j]) + Math.abs(px[i + 1] - ref[j + 1]) + Math.abs(px[i + 2] - ref[j + 2]); n += 3;
+  }
+  return sum / n;
+}
+async function loadRef(url) {
+  const bmp = await createImageBitmap(await fetchBlob(url), { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
+  return toImageData(bmp, canvas.width, canvas.height).data;
+}
 window.__portal = {
   get state() { return S; },
   setWorld, setMode: (m) => setMode(m, true), setMirror: (b) => { S.mirror = b; },
@@ -946,6 +1253,8 @@ window.__portal = {
   setDebug: (b) => { S.debug = b; }, loadScene, visualOrder, displayName: (i) => displayName(S.worlds[i]),
   tiles: () => tileRects(), narrow: () => narrowStage(),
   audioState: () => (audio ? audio.ctx.state : 'none'),
+  // the flood rush's gain (0 when none plays; null without sound)
+  floodGain: () => (audio ? audio.floodGain() : null),
   setTau: (t) => { S.tau = t; },
   // hold the world-change wave at a phase in [0, 1] (null releases it)
   setWave: (u) => { S.waveHold = u; },
@@ -979,29 +1288,36 @@ window.__portal = {
   },
   // colour parity: mean |page - reference| (0-255) of the person colour of the empty scene in this world
   async parity(refUrl) {
-    const bmp = await createImageBitmap(await fetchBlob(refUrl), { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
-    const ref = toImageData(bmp, canvas.width, canvas.height).data;
+    const ref = await loadRef(refUrl);
     render(performance.now(), { view: 6 });
-    const { px, w, h, at } = readFrame();
-    let sum = 0, n = 0;
-    for (let y = 0; y < h; y += 2) for (let x = 0; x < w; x += 2) {
-      const i = at(x, y), j = 4 * (y * w + x);
-      sum += Math.abs(px[i] - ref[j]) + Math.abs(px[i + 1] - ref[j + 1]) + Math.abs(px[i + 2] - ref[j + 2]); n += 3;
-    }
-    return sum / n;
+    return diffImage(ref);
   },
-  // mean |output - camera| (0-255) over a column band [x0, x1) of the frame
-  compare(x0, x1) {
-    const { px, w, h } = comp.readPixels();
-    wctx.drawImage(S.video, 0, 0, w, h);
-    const cam = wctx.getImageData(0, 0, w, h).data;
-    let sum = 0, n = 0;
-    for (let y = 0; y < h; y += 2) for (let x = Math.floor(x0 * w); x < Math.floor(x1 * w); x += 2) {
-      const xo = S.mirror ? w - 1 - x : x;
-      const i = 4 * ((h - 1 - y) * w + xo), j = 4 * (y * w + x);
-      sum += Math.abs(px[i] - cam[j]) + Math.abs(px[i + 1] - cam[j + 1]) + Math.abs(px[i + 2] - cam[j + 2]); n += 3;
-    }
-    return sum / n;
+  // mean |output - camera| (0-255) over a column band [x0, x1) of the frame (of the last frame drawn)
+  compare(x0, x1) { return diffCamera(x0, x1, 0, 1); },
+  // the same over a row band [y0, y1)
+  compareRows(y0, y1) { return diffCamera(0, 1, y0, y1); },
+  // ... and over a box, columns [x0, x1) and rows [y0, y1)
+  compareBox(x0, x1, y0, y1) { return diffCamera(x0, x1, y0, y1); },
+  // analyse the current video frame again, n times: a paused frame's mask settles on it (its fading
+  // trail goes, as in motion)
+  reanalyse(n = 1) { for (let i = 0; i < n; i++) onVideoFrame(); return window.__portal.maskStats(); },
+  // hold a flood centred at (x, y) (frame coords) at phase u in [0, 1], the rule taken over; null lets
+  // it drain as a release would
+  flood(x, y, u) {
+    if (u == null) { if (S.flood) releaseFlood(false); return; }
+    S.flood = { x, y, hold: u, held: false, by: 'test' };
+  },
+  // draw a frame now (then compare() reads it)
+  renderNow() { return render(performance.now()); },
+  // the seam: 'grow' or 'cut'; the line's morph band in px (at 768 wide)
+  setSeam: (s) => setSeam(s, true),
+  setBand: (px) => { S.band = px; },
+  // the current world's background at ladder rung k (0 the plate .. N the world), exposure gain 1; with a
+  // reference image, mean |page - reference| (0-255), else N
+  async rungView(k, refUrl) {
+    const ref = refUrl ? await loadRef(refUrl) : null;
+    render(performance.now(), { rung: k });
+    return ref ? diffImage(ref) : ladderOf(currentWorld()).n;
   },
   maskStats() {
     const m = S.mask; if (!m) return null;

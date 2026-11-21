@@ -3,6 +3,11 @@ scene has its clean plate, Stable Diffusion worlds made offline (each with the p
 field for people), a depth map for the depth rule, and what Stable Diffusion was given. The camera and
 the world server are off; people come from the kiosk's background-difference mask.
 
+Each world also gets its ladder for the page's Grow seam (crossover/morph.py): media/{sid}_{style}_r1.jpg,
+the exact image img2img started from (the world's colour filter of the plate), and, where lower-strength
+SD images of the world are on disk (the plaza), media/{sid}_{style}_r2.jpg, the one nearest the middle
+of the filter-to-world distance. scenes.json lists them as worlds[i].ladder = [{src, n}].
+
     python scripts/build_portal_artifact.py OUT_DIR [--harness]
 
 Needs the clips (scripts/fetch_sample.sh, scripts/fetch_clips.sh), their clean plates, depth maps and
@@ -24,6 +29,7 @@ import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+from crossover import morph  # noqa: E402
 from crossover.colormap import LocalAffineColor  # noqa: E402
 from crossover.depth import farness  # noqa: E402
 
@@ -34,11 +40,12 @@ LABELS = {"vangogh": "Van Gogh", "cyberpunk": "Cyberpunk", "winter": "Winter", "
 ORDER = ["vangogh", "cyberpunk", "winter", "night", "1920s", "autumn", "underwater", "overgrown"]
 # start: where the clip is cut from the source; start_time: where the page starts playing it (clip time).
 # The plaza opens 5 s before a walker crosses the line (vtest 59.4 s, found with scripts/find_moments.py).
+# ladder: the gen dirs searched for lower-strength SD rungs of each world (default: gen alone).
 SCENES = [
     dict(id="plaza", name="Plaza", video="data/sample/vtest.avi", start=35, dur=40, start_time=19.4,
          plate="out/vtest_gen_1920s/clean_bg.png", gen="out/gen", runs="out/vtest_gen_{style}",
          depth="out/vtest_depth_century/depth_disparity.npy", start_world="Winter", tau=0.45,
-         portal=dict(x=0.62, y=0.45, r=0.2)),
+         portal=dict(x=0.62, y=0.45, r=0.2), ladder=morph.GEN_DIRS),
     dict(id="crowd", name="Crowd", video="data/clips/crowd04.mp4", start=0, dur=None, start_time=2.0,
          plate="out/clips/crowd04/clean_bg.png", gen="out/clips/crowd04/gen", runs="out/clips/crowd04/run_line_{style}",
          depth="out/clips/crowd04/depth_disparity.npy", start_world="Cyberpunk", tau=0.5,
@@ -122,6 +129,36 @@ def gen_meta(sc: dict, stem: str) -> dict | None:
             "guidance": m.get("guidance")}
 
 
+def ladder_rungs(sc: dict, style: str, stem: str, plate: np.ndarray, world: np.ndarray) -> list[tuple[str, object, np.ndarray]]:
+    """The page's rungs between the plate and a world, as (tag, n, image): ('r1', 'filter', the exact
+    img2img start image, styles.apply_style(plate, INIT_FILTER[style]) via morph.chain), then, if the
+    scene has lower-strength SD images of the world (same seed and schedule, minus morph.EXCLUDE),
+    ('r2', n, the one nearest the middle of the filter-to-world blurred distance, morph.mid_index)."""
+    dirs = tuple(sc.get("ladder", (sc["gen"],)))
+    try:
+        mids = [r for r in morph.sd_rungs(style, stem, dirs, ROOT, pick_dir=sc["gen"]) if r.key not in morph.EXCLUDE]
+    except KeyError:                                   # no meta.json entry for the pick: filter rung only
+        mids = []
+    rungs, labels = morph.chain(style, plate, world, mids)
+    out = []
+    if "filter" in labels:
+        out.append(("r1", "filter", rungs[labels.index("filter")]))
+    i = morph.mid_index(rungs, labels)
+    if i is not None:
+        out.append(("r2", int(labels[i][1:]), rungs[i]))
+    return out
+
+
+def write_rung(path: str, img: np.ndarray) -> int:
+    """JPEG q85, or q80 when a grainy rung would pass 150 KB. Returns the file size."""
+    img = np.clip(np.rint(img), 0, 255).astype(np.uint8)
+    for q in (85, 80):
+        cv2.imwrite(path, img, [cv2.IMWRITE_JPEG_QUALITY, q])
+        if os.path.getsize(path) <= 150_000:
+            break
+    return os.path.getsize(path)
+
+
 def thumb(src: str, dst: str, width: int = 320) -> bool:
     img = cv2.imread(src)
     if img is None:
@@ -131,13 +168,14 @@ def thumb(src: str, dst: str, width: int = 320) -> bool:
     return True
 
 
-def build(out: str, harness: bool = False) -> dict:
+def build(out: str, harness: bool = False) -> tuple[dict, list, dict]:
+    """Returns the size of every file written, the files to publish, and the ladder rungs' sizes."""
     media = os.path.join(out, "media")
     os.makedirs(media, exist_ok=True)
     for name in JS:
         shutil.copy(os.path.join(PORTAL, name), os.path.join(out, name))
     shutil.copy(os.path.join(PORTAL, "artifact", "page.html"), os.path.join(out, "page.html"))
-    scenes = []
+    scenes, rung_sizes = [], {}
     for sc in SCENES:
         plate = cv2.imread(os.path.join(ROOT, sc["plate"]))
         if plate is None:
@@ -153,7 +191,17 @@ def build(out: str, harness: bool = False) -> dict:
             rel = f"media/{sid}_{style}.jpg"
             cv2.imwrite(os.path.join(out, rel), img, [cv2.IMWRITE_JPEG_QUALITY, 88])
             colour, lac = colour_field(plate, img)
-            worlds.append({"name": LABELS.get(style, style), "src": rel, "colour": colour, "gen": gen_meta(sc, stem)})
+            world = {"name": LABELS.get(style, style), "src": rel, "colour": colour, "gen": gen_meta(sc, stem)}
+            ladder = []
+            for tag, n, rung in ladder_rungs(sc, style, stem, plate, img):
+                rrel = f"media/{sid}_{style}_{tag}.jpg"
+                rung_sizes[rrel] = write_rung(os.path.join(out, rrel), rung)
+                ladder.append({"src": rrel, "n": n})
+            if ladder:
+                world["ladder"] = ladder
+            if morph.PATTERN.get(style) == "dots":     # its detail grows in halftone dots
+                world["pattern"] = "dots"
+            worlds.append(world)
             if harness:      # the person colour of the plate, for the page's colour parity test
                 cv2.imwrite(os.path.join(media, f"{sid}_{style}_lacref.png"), lac.apply(plate))
         entry = {"id": sid, "name": sc["name"], "clip": clip, "plate": f"media/{sid}_plate.jpg", "worlds": worlds,
@@ -186,7 +234,10 @@ def build(out: str, harness: bool = False) -> dict:
                 publish.append(rel)
     with open(os.path.join(out, "publish.json"), "w") as f:
         json.dump(sorted(publish), f, indent=1)
-    return sizes
+    return sizes, sorted(publish), rung_sizes
+
+
+PUBLISH_BUDGET = 12.5e6     # bytes; the artifact limit is 16 MB
 
 
 def main(argv=None):
@@ -194,11 +245,18 @@ def main(argv=None):
     ap.add_argument("out")
     ap.add_argument("--harness", action="store_true")
     a = ap.parse_args(argv)
-    sizes = build(a.out, a.harness)
+    sizes, publish, rungs = build(a.out, a.harness)
     total = sum(sizes.values())
     for k in sorted(sizes):
         print(f"{sizes[k] / 1e6:7.2f} MB  {k}")
     print(f"{total / 1e6:7.2f} MB  total, largest {max(sizes.values()) / 1e6:.2f} MB")
+    print(f"{sum(rungs.values()) / 1e6:7.2f} MB  added by {len(rungs)} ladder rungs "
+          f"(largest {max(rungs.values(), default=0) / 1e3:.0f} KB)")
+    pub = sum(sizes[k] for k in publish)
+    print(f"{pub / 1e6:7.2f} MB  published in {len(publish)} files (budget {PUBLISH_BUDGET / 1e6:.1f} MB)")
+    if pub > PUBLISH_BUDGET:
+        print("over the page budget: drop rungs or re-encode")
+        return 1
     return 0
 
 

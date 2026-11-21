@@ -2,8 +2,12 @@
 //   python scripts/build_portal_artifact.py SITE --harness && (cd SITE && python -m http.server 8770) &
 //   node portal/artifact/test.cjs http://127.0.0.1:8770/harness.html some_fixed_camera_clip.mp4 OUT_DIR
 // Checks: errors and CSP; the opening crossing; colour parity of every generated world against the
-// Python colour field; real side vs world side; a person-only burst (deterministic, video paused);
-// Layers; Depth; the world-change wave (held at half way); the other scenes; your own video; phone.
+// Python colour field; real side vs world side (video paused); Grow, the default seam (video paused: the
+// real side is the camera bit for bit, no step at the line, the world forms across the band, every
+// ladder exact at its rungs, depth leaves nearer rows untouched) and Cut; Hold to flood (held at phases
+// with the video paused, the mouse gesture, a held full flood with the clip playing, its sound, a phone
+// long press); a person-only burst (deterministic, video paused); Layers; Depth; the world-change wave
+// (held at half way); the other scenes; your own video; phone.
 const { chromium, devices } = require('playwright');
 const fs = require('fs');
 const path = require('path');
@@ -74,11 +78,78 @@ const meanAbs = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += M
     });
     for (const [k, v] of Object.entries(report.parity)) check(v <= 3, `colour parity ${k}: ${v} > 3 levels`);
 
-    // real side matches the clip, the world side differs
+    // real side matches the clip, the world side differs. Measured on a paused frame drawn just before:
+    // with the clip playing, compare() can read a newer video frame than the one drawn (2-6 levels in
+    // either seam), so that reading is only reported (live)
     await page.evaluate(() => { const p = window.__portal; p.setMode(0); p.setLine(0.5); });
     await page.waitForFunction(() => window.__portal.state.flash === 0 && !window.__portal.state.wave, null, { timeout: 20000 });
-    report.sides = await page.evaluate(() => ({ real: window.__portal.compare(0.02, 0.45), other: window.__portal.compare(0.55, 0.98) }));
+    report.sides = await page.evaluate(async () => {
+      const p = window.__portal, s = p.state;
+      const live = { real: p.compare(0.02, 0.45), other: p.compare(0.55, 0.98) };
+      s.video.pause(); s.autoGlitch = false; s.burst = null;
+      await new Promise((r) => setTimeout(r, 400));
+      p.renderNow();
+      const out = { real: p.compare(0.02, 0.45), other: p.compare(0.55, 0.98), live };
+      s.video.play(); s.autoGlitch = true;
+      return out;
+    });
     check(report.sides.real < 8 && report.sides.other > 2 * report.sides.real, `sides ${JSON.stringify(report.sides)}`);
+
+    // Grow, the default seam: video paused, Winter, line at 0.5, band 120 px; then the same frame in Cut
+    report.grow = await page.evaluate(async () => {
+      const p = window.__portal, s = p.state;
+      s.video.pause(); s.autoGlitch = false; s.burst = null;
+      await new Promise((r) => setTimeout(r, 400));
+      const winter = s.worlds.findIndex((w) => w.kind === 0 && w.name === 'Winter');
+      p.setWorld(winter, true); p.setMode(0); p.setLine(0.5); p.setBand(120);
+      const bands = [[0.52, 0.56], [0.60, 0.66], [0.75, 0.98]];
+      const look = (seam) => {
+        p.setSeam(seam); p.renderNow();
+        return { real: p.compare(0.02, 0.45), step: p.compare(0.500, 0.506), other: p.compare(0.55, 0.98),
+                 bands: bands.map((b) => p.compare(b[0], b[1])) };
+      };
+      const grow = look('grow'), cut = look('cut');
+      p.setSeam('grow');
+      // every generated world's ladder at its integer rungs against the JPEGs it was made from
+      const sc = s.scenes[s.scene], ladders = {};
+      for (const wj of sc.worlds) {
+        p.setWorld(s.worlds.findIndex((w) => w.kind === 0 && w.name === wj.name), true);
+        const n = await p.rungView(0), refs = [sc.plate, ...(wj.ladder || []).map((r) => r.src), wj.src];
+        ladders[wj.name] = { n, want: refs.length - 1, diffs: [] };
+        for (let k = 0; k <= n; k++) ladders[wj.name].diffs.push(+(await p.rungView(k, refs[k])).toFixed(3));
+      }
+      p.setWorld(winter, true);
+      // depth ('AI fog') at tau 0.45: rows nearer than tau (by 0.05, all along the row) stay the camera's
+      p.setMode(4); p.setTau(0.45); p.renderNow();
+      const f = s.far, H = s.video.videoHeight;
+      let y0 = H;
+      for (let y = H - 1; y >= 0; y--) {
+        const fy = Math.min(f.h - 1, Math.floor((y + 0.5) / H * f.h));
+        let mx = 0;
+        for (let x = 0; x < f.w; x++) mx = Math.max(mx, f.f[fy * f.w + x]);
+        if (mx < 0.40) y0 = y; else break;
+      }
+      const depth = { fromRow: y0 / H, near: p.compareRows(y0 / H, 1), far: p.compareRows(0, 0.3) };
+      p.setMode(0); s.video.play(); s.autoGlitch = true;
+      return { grow, cut, ladders, depth };
+    });
+    {
+      const g = report.grow;
+      check(g.grow.real === 0, `grow: the real side is not the camera (${g.grow.real})`);
+      check(g.grow.step < 6, `grow: step across the line ${g.grow.step} (cut ${g.cut.step})`);
+      // how far the world has formed: each band against the full world over the same columns (Cut),
+      // since columns differ in how much Winter changes them
+      g.formed = g.grow.bands.map((v, i) => +(v / Math.max(1e-6, g.cut.bands[i])).toFixed(3));
+      check(g.formed[0] < g.formed[1] && g.formed[1] < g.formed[2] && g.formed[2] > 0.97, `grow: not rising into the band ${JSON.stringify(g.formed)}`);
+      // every world has the rungs scenes.json lists (n = rungs + 1), and some have an SD middle rung
+      for (const [name, l] of Object.entries(g.ladders)) {
+        check(l.n === l.want && l.n >= 2 && l.diffs[0] < 1.5 && l.diffs[l.n] < 1.5 && Math.max(...l.diffs) < 1.5,
+              `ladder ${name} ${JSON.stringify(l)}`);
+      }
+      check(Object.values(g.ladders).some((l) => l.n === 3), 'no plaza world has a middle rung (plate, filter, SD rung, world)');
+      check(g.depth.near === 0 && g.depth.far > 10, `grow depth ${JSON.stringify(g.depth)}`);
+      check(g.cut.real < 8 && g.cut.other > 2 * g.cut.real && g.cut.step > 30, `cut sides ${JSON.stringify(g.cut)}`);
+    }
 
     // drag the line (the handle takes no pointer events)
     const box = await page.locator('#view').boundingBox();
@@ -87,6 +158,136 @@ const meanAbs = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += M
     report.lineAfterDrag = await page.evaluate(() => window.__portal.state.line.x);
     check(Math.abs(report.lineAfterDrag - 0.3) < 0.02, 'line drag');
     await page.evaluate(() => window.__portal.setLine(0.5));
+
+    // the Morph chip and key E switch Grow and Cut; the wheel on the line widens the band
+    await page.click('#b-seam');
+    const afterChip = await page.evaluate(() => window.__portal.state.seam);
+    await page.keyboard.press('e');
+    const afterKey = await page.evaluate(() => window.__portal.state.seam);
+    await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5);
+    await page.mouse.wheel(0, -100); await sleep(300);
+    report.seamUi = { afterChip, afterKey, band: await page.evaluate(() => window.__portal.state.band),
+                      chipPressed: await page.getAttribute('#b-seam', 'aria-pressed') };
+    check(afterChip === 'cut' && afterKey === 'grow' && report.seamUi.band > 120 && report.seamUi.chipPressed === 'true',
+          `morph chip ${JSON.stringify(report.seamUi)}`);
+    await page.evaluate(() => window.__portal.setBand(120));
+
+    // Hold to flood, held at phases (video paused, Winter, line at 0.5), in Grow and in Cut: a small flood
+    // changes the ground around the press and leaves the far corner the camera's; a full one covers the
+    // frame; let go, it drains back to the line (in Grow, the real side is the camera again, exactly)
+    report.flood = await page.evaluate(async () => {
+      const p = window.__portal, s = p.state;
+      s.video.pause(); s.autoGlitch = false; s.burst = null;
+      await new Promise((r) => setTimeout(r, 400));
+      p.setWorld(s.worlds.findIndex((w) => w.kind === 0 && w.name === 'Winter'), true);
+      p.setMode(0); p.setLine(0.5);
+      const out = {};
+      for (const seam of ['grow', 'cut']) {
+        p.setSeam(seam);
+        p.flood(0.3, 0.8, 0.15); p.renderNow();
+        const early = { near: p.compareBox(0.25, 0.35, 0.74, 0.86), corner: p.compareBox(0.9, 1, 0, 0.1) };
+        p.flood(0.3, 0.8, 1); p.renderNow();
+        const full = { real: p.compare(0.02, 0.45), top: p.compareRows(0, 0.1), bottom: p.compareRows(0.9, 1) };
+        p.flood(null);
+        await new Promise((r) => setTimeout(r, 700));      // (runs after the drain's own 620-ms timer)
+        const drained = !s.flood;
+        p.renderNow();
+        out[seam] = { early, full, drained, after: { real: p.compare(0.02, 0.45), other: p.compare(0.55, 0.98) } };
+      }
+      p.setSeam('grow'); s.video.play(); s.autoGlitch = true;
+      return out;
+    });
+    {
+      const { grow: g, cut: c } = report.flood;
+      check(g.early.near > 10 && g.early.corner === 0 && g.full.real > 20 && g.full.top > 10 && g.full.bottom > 10 &&
+            g.drained && g.after.real === 0, `flood (grow) ${JSON.stringify(g)}`);
+      check(c.early.near > 10 && c.early.corner < 1 && c.full.real > 20 && c.full.top > 10 && c.full.bottom > 10 &&
+            c.drained && c.after.real < 8 && c.after.other > 2 * c.after.real, `flood (cut) ${JSON.stringify(c)}`);
+    }
+
+    // the gesture, with the mouse: held still for 700 ms it floods; let go, the flood is gone 900 ms later
+    // (on the page's clock: a check timer due then runs after the drain's own timer, however busy the
+    // page) and the line has not moved; a quick click still moves the line; the drag above still works.
+    // A hold needs 280 ms and 3 drawn frames, which here (1-3 fps) can take longer than 700 ms: it waits.
+    await page.evaluate(() => {
+      window.__portal.setLine(0.5);
+      const c = document.getElementById('view'), fp = (window.__floodProbe = {});
+      c.addEventListener('pointerup', () => setTimeout(() => { fp.goneAt900 = !window.__portal.state.flood; }, 900), { once: true });
+    });
+    await page.mouse.move(box.x + box.width * 0.35, box.y + box.height * 0.7);
+    await page.mouse.down(); await sleep(700);
+    const heldMouse = await page.waitForFunction(() => { const f = window.__portal.state.flood; return !!(f && f.held); },
+      null, { timeout: 3000, polling: 50 }).then(() => true, () => false);
+    await page.mouse.up();
+    await page.waitForFunction(() => window.__floodProbe.goneAt900 !== undefined, null, { timeout: 15000 });
+    report.holdMouse = await page.evaluate((held) => ({ held, goneAt900: window.__floodProbe.goneAt900,
+      lineAfterHold: window.__portal.state.line.x }), heldMouse);
+    await page.mouse.click(box.x + box.width * 0.7, box.y + box.height * 0.5);
+    report.holdMouse.lineAfterClick = await page.evaluate(() => window.__portal.state.line.x);
+    {
+      const h = report.holdMouse;
+      check(h.held && h.goneAt900 && h.lineAfterHold === 0.5 && Math.abs(h.lineAfterClick - 0.7) < 0.02, `hold to flood (mouse) ${JSON.stringify(h)}`);
+    }
+
+    // a held full flood with the clip playing: walkers cross as its front reaches their feet (at least one
+    // crossing), their bursts stay at least 900 ms apart, and, held full, it stays after the release until
+    // a tap lets it go (the tap does not move the line). A busy stretch of the clip, and the line at the
+    // right edge, so that the walkers start in the filmed scene.
+    report.floodPlay = await page.evaluate(async () => {
+      const p = window.__portal, s = p.state;
+      p.setLine(0.98); s.autoGlitch = true;
+      s.video.currentTime = 22;
+      await new Promise((r) => s.video.addEventListener('seeked', r, { once: true }));
+      await s.video.play();
+      await new Promise((r) => setTimeout(r, 1500));
+      return { c0: s.crossings, t0: performance.now(), tracks: s.tracks.length };
+    });
+    await page.mouse.move(box.x + box.width * 0.3, box.y + box.height * 0.8);
+    await page.mouse.down(); await sleep(6000); await page.mouse.up(); await sleep(1500);
+    Object.assign(report.floodPlay, await page.evaluate((t0) => {
+      const s = window.__portal.state, b = s.burstLog.filter((t) => t > t0), gaps = b.slice(1).map((t, i) => t - b[i]);
+      return { crossings: s.crossings, bursts: b.length, gapsMs: gaps.map(Math.round),
+               minGapMs: gaps.length ? Math.round(Math.min(...gaps)) : null, kept: !!(s.flood && s.flood.keep) };
+    }, report.floodPlay.t0));
+    report.floodPlay.crossings -= report.floodPlay.c0;
+    await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.5);
+    report.floodPlay.letGo = await page.waitForFunction(() => !window.__portal.state.flood, null, { timeout: 15000 }).then(() => true, () => false);
+    report.floodPlay.lineAfterTap = await page.evaluate(() => window.__portal.state.line.x);
+    await page.evaluate(() => window.__portal.setLine(0.5));
+    {
+      const f = report.floodPlay;
+      check(f.crossings >= 1 && (f.minGapMs == null || f.minGapMs >= 900) && f.kept && f.letGo && f.lineAfterTap === 0.98,
+            `flood with the clip playing ${JSON.stringify(f)}`);
+    }
+
+    // the flood's sound (sound on, clip paused): a rush while it grows, which ends at full cover, so a
+    // flood held full and kept is quiet (no hiss until the next tap), and quiet again once let go
+    await page.click('#b-sound'); await sleep(600);
+    report.floodSound = await page.evaluate(() => {
+      const p = window.__portal, s = p.state;
+      s.video.pause(); s.autoGlitch = false; s.burst = null;
+      const r = (window.__rush = { max: 0 });
+      r.timer = setInterval(() => { r.max = Math.max(r.max, p.floodGain() || 0); }, 40);
+      return { state: p.audioState() };
+    });
+    await page.mouse.move(box.x + box.width * 0.4, box.y + box.height * 0.6);
+    await page.mouse.down(); await sleep(6000); await page.mouse.up(); await sleep(1500);
+    Object.assign(report.floodSound, await page.evaluate(() => { const p = window.__portal, s = p.state;
+      return { kept: !!(s.flood && s.flood.keep), rising: +window.__rush.max.toFixed(3), whileKept: p.floodGain() }; }));
+    await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.5);
+    report.floodSound.letGo = await page.waitForFunction(() => !window.__portal.state.flood, null, { timeout: 15000 }).then(() => true, () => false);
+    await sleep(1200);
+    Object.assign(report.floodSound, await page.evaluate(() => { const p = window.__portal, s = p.state;
+      clearInterval(window.__rush.timer);
+      const after = p.floodGain();
+      s.video.play(); s.autoGlitch = true; p.setLine(0.5);
+      return { afterLetGo: after }; }));
+    await page.click('#b-sound'); await sleep(300);
+    {
+      const f = report.floodSound;
+      check(f.state !== 'running' || (f.rising > 0.05 && f.kept && f.whileKept === 0 && f.letGo && f.afterLetGo === 0),
+            `flood sound ${JSON.stringify(f)}`);
+    }
 
     // a burst stays on the person: with the video paused, nothing outside the box changes
     await page.waitForFunction(() => window.__portal.state.tracks.some((t) => t.box && t.hw >= 1.3), null, { timeout: 20000 }).catch(() => {});
@@ -205,6 +406,27 @@ const meanAbs = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += M
     const box = await page.locator('#view').boundingBox();
     await page.touchscreen.tap(box.x + box.width * 0.7, box.y + box.height * 0.5);
     report.phone.lineAfterTap = await page.evaluate(() => window.__portal.state.line.x);
+    check(Math.abs(report.phone.lineAfterTap - 0.7) < 0.02, `phone tap ${report.phone.lineAfterTap}`);
+    // a long press floods: a 700-ms touch (the browser's own touch input, so its pointer events, any
+    // context menu and selection are real; as above, it waits for the hold if 3 frames take longer); let
+    // go, it drains; the line stays; nothing on the page is selected
+    {
+      const cdp = await ctx.newCDPSession(page);
+      const tx = box.x + box.width * 0.4, ty = box.y + box.height * 0.75;
+      const n0 = await page.evaluate(() => window.__portal.state.floods);
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: tx, y: ty }] });
+      await sleep(700);
+      const held = await page.waitForFunction(() => { const f = window.__portal.state.flood; return !!(f && f.held); },
+        null, { timeout: 3000, polling: 50 }).then(() => true, () => false);
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      const drained = await page.waitForFunction(() => !window.__portal.state.flood, null, { timeout: 15000 }).then(() => true, () => false);
+      report.phone.flood = { held, drained, ...(await page.evaluate((n0) => { const sel = getSelection();
+        return { floods: window.__portal.state.floods - n0, line: window.__portal.state.line.x, selected: String(sel),
+                 collapsed: sel.rangeCount === 0 || sel.isCollapsed }; }, n0)) };
+      const f = report.phone.flood;
+      check(f.held && f.floods === 1 && f.drained && f.selected === '' && f.collapsed && Math.abs(f.line - 0.7) < 0.02,
+            `phone long press ${JSON.stringify(f)}`);
+    }
     await page.tap('#b-layers'); await sleep(500);
     await page.touchscreen.tap(box.x + box.width * 0.5, box.y + box.height * 0.5); await sleep(800);
     report.phone.layer = await page.evaluate(() => window.__portal.state.layer);

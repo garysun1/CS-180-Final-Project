@@ -440,7 +440,14 @@ steps into the ring or walks under the lens appears in another world, live.
   - **Layers** takes the picture apart into the filmed frame and mask, the empty scene, the one
     generated image, the people, the rule and the result;
   - **Depth** turns everything farther than a tapped distance into the other world, and new worlds
-    roll in from the horizon.
+    roll in from the horizon;
+  - **Grow** (on by default; the **Morph** chip or `E` switches back to the exact cut): every rule's
+    seam and the world-change wave morph through the world's ladder (`crossover/morph.py`): the
+    empty scene, the image img2img started from, a lower-strength SD image, the world. Where the
+    world has not begun, the page shows the camera pixel itself;
+  - **Hold to flood** (press and hold, or `O` in the kiosk): the world pours out from under your
+    finger over the whole scene, and each walker crosses, with their burst, as it reaches their feet.
+    Let go and it drains back.
 - **Project page:** the source is in `site/`. `python site/build_media.py && python site/make_page.py`
   rebuilds it and checks the 16 MB page budget.
 

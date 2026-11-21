@@ -1,5 +1,6 @@
 // Sound that follows the line, synthesized with Web Audio (no files): a quiet room tone, a pad chord
-// per world that swells as people cross into it, and a whoosh on every crossing.
+// per world that swells as people cross into it, a whoosh on every crossing, and a rising rush while
+// a flood grows.
 const CHORDS = [
   [110, 130.8, 164.8], [98, 123.5, 146.8], [87.3, 110, 130.8], [82.4, 103.8, 123.5],
   [73.4, 92.5, 110], [65.4, 82.4, 98], [116.5, 146.8, 174.6], [103.8, 130.8, 155.6], [92.5, 116.5, 138.6],
@@ -61,6 +62,35 @@ export class PortalAudio {
     s.connect(bp).connect(g).connect(this.master);
     s.start(t); s.stop(t + 0.55);
   }
+
+  // Hold to flood: looping band-passed noise that rises from 300 to 3300 Hz and swells with the flood
+  // (level 0..1) while it moves. When it covers everything the rush ends in a whoosh and fades out, so a
+  // full flood, held or kept, is quiet; it comes back as the flood drains. Made on use; 0 lets it go.
+  flood(level) {
+    const ctx = this.ctx, t = ctx.currentTime, v = Math.min(1, Math.max(0, level || 0));
+    let f = this.fl;
+    if (v <= 0 || v >= 1) {
+      if (f) {
+        if (v >= 1) this.whoosh();
+        f.g.gain.setTargetAtTime(0, t, v >= 1 ? 0.12 : 0.04); f.s.stop(t + (v >= 1 ? 0.8 : 0.3));
+        this.fl = null;
+      }
+      return;
+    }
+    if (!f) {
+      const s = ctx.createBufferSource(); s.buffer = this.noise; s.loop = true;
+      const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = 1.8; bp.frequency.value = 300 * Math.pow(11, v);
+      const g = ctx.createGain(); g.gain.value = 0;
+      s.connect(bp).connect(g).connect(this.master);
+      s.start(t);
+      f = this.fl = { s, bp, g };
+    }
+    f.bp.frequency.setTargetAtTime(300 * Math.pow(11, v), t, 0.06);
+    f.g.gain.setTargetAtTime(0.3 * v, t, 0.06);
+  }
+
+  // the rush's gain now (0 when none plays), for tests
+  floodGain() { return this.fl ? this.fl.g.gain.value : 0; }
 
   setMuted(m) { this.master.gain.setTargetAtTime(m ? 0 : 0.8, this.ctx.currentTime, 0.05); }
 }
