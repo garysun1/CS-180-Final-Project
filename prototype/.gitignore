@@ -1,8 +1,0 @@
-out/
-data/
-__pycache__/
-.pytest_cache/
-*.pyc
-models/
-site/media/
-site/index.html

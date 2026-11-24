@@ -1,0 +1,12 @@
+# data, models and generated results (fetched or rebuilt by the scripts)
+/out
+/data
+/models
+/site
+/portal/vendor
+/portal/models
+/portal/clips
+/portal/runtime
+__pycache__/
+.pytest_cache/
+*.pyc
