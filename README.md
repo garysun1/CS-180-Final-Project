@@ -2,7 +2,9 @@
 
 ## Abstract
 
-Film a place from a tripod. We redraw the empty place once with AI as winter, night, the 1920s or a Van Gogh painting. Then anyone who walks across a line in the frame steps from the real world into that one, and back. The line can also be a distance ("everything farther than here"), a ring on the ground, or a wave that sweeps in from the horizon. On the real side, every pixel is the camera's own. On the other side is a generated twin of the same place, aligned to the pixel. A short web demo and a live-camera kiosk let people do the crossing themselves.
+**Today's AI video redraws every frame. A tripod lets us redraw the world once, so reality and its AI twin share one frame, and you can walk across the line between them.**
+
+We film a place from a tripod and redraw the empty scene once as winter, night, the 1920s or a Van Gogh painting. A rule (a line, a distance, a ring on the ground) then decides, pixel by pixel, whether you see the camera's own image or its generated twin, so anyone who walks across steps into the other world. A web demo and a live-camera kiosk let people do the crossing themselves.
 
 ## How it is done today, and why it falls short
 
@@ -15,6 +17,8 @@ Restyling one photo is routine: pix2pix [1], CycleGAN's summer-to-winter Yosemit
 - **Meeting apps** come closest in spirit. Teams' "Decorate your background", Zoom and Meet [18] generate a background once and paste the live person on top. But that background replaces the room; it never shares the frame with it.
 
 ## What is new, and why we think it works
+
+Three things: the world is generated once, the crossing between it and reality, and a world that grows in instead of cutting.
 
 **A tripod turns video editing into image editing.** With a fixed camera, the layered-editing canvas needs no learning: every frame maps to it by the identity, so the canvas *is* the clean plate. A per-pixel median over the clip recovers it in closed form [19]. We restyle that one image with Stable Diffusion 1.5, ControlNet (depth and edges) and LCM, in 80–149 s per world on four CPU cores. The world is a single image, so it cannot flicker, and it works at any clip length or resolution. Like VFX clean-plate compositing, people are cut out (pixels that differ from the plate) and put back. They are colour-matched to each world, and their shadows carry over as the frame-to-plate brightness ratio, a simple form of shadow compositing [20].
 
