@@ -908,6 +908,8 @@ function render(now, over = {}) {
     burst: !!bs, burstBox: bs && bs.box, burstPer: bs ? bs.per : -1, burstEdge: bs && bs.edge,
     paintTex: paintTex.get(S.world) || null,
   };
+  // Paint: the people standing in the current world (drawPainted uploads each painted world's own)
+  if (S.mode === 5 && !fl) uploadPW(lastBlobs, (b) => (b.world === S.world ? (grow ? b.u : b.w) : 0));
   if (over.rung != null) {               // the background alone at a ladder rung (exposure gain 1)
     comp.draw({ ...p, view: 0, flash: 0, glitch: 0, seam: true, waveOn: false, forceRung: over.rung, gain: 1 });
   } else if (over.view != null) {
@@ -941,7 +943,7 @@ function render(now, over = {}) {
 // Each pass gets its world's image, colour field and paint, and the people standing in that world.
 function drawPainted(p, bs, grow) {
   const ws = painting.worlds();
-  if (!ws.length) { comp.draw(p); return; }      // nothing painted: the camera frame
+  if (!ws.length) { uploadPW(lastBlobs, () => 0); comp.draw(p); return; }   // nothing painted: the camera frame
   ws.forEach((k, i) => {
     const w = S.worlds[k], burst = !!bs && !!S.burst && S.burst.world === k;
     uploadPW(lastBlobs, (b) => (b.world === k ? (grow ? b.u : b.w) : 0));
