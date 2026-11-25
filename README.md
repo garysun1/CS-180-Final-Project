@@ -4,7 +4,7 @@
 
 [Try it in the browser](https://claude.ai/artifact/X5CC9ZXuQ7xwdemQcU9apw) · demo video (coming) · UC Berkeley CS180/280A final project, Fall 2026
 
-![The interface: the filmed plaza on the left, the same moment in winter on the right](docs/media/interface.jpg)
+![The interface: three worlds painted on the filmed plaza: a neon building, a Van Gogh path and a snowy lawn](docs/media/interface.jpg)
 
 ## What it is
 
