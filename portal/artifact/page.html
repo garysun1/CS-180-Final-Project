@@ -132,10 +132,15 @@
     <select id="scene"><option>Plaza</option></select>
     <div class="seg" role="group" aria-label="Rule">
       <button type="button" data-mode="0" aria-pressed="true">Line</button>
+      <button type="button" data-mode="5" aria-pressed="false" title="Paint where the world shows (P)">Paint</button>
       <button type="button" data-mode="1" aria-pressed="false">Portal</button>
       <button type="button" data-mode="2" aria-pressed="false">Lens</button>
       <button type="button" data-mode="4" aria-pressed="false">Depth</button>
       <button type="button" data-mode="3" aria-pressed="false">Whole</button>
+    </div>
+    <div class="seg" id="paint-tools" role="group" aria-label="Brush" hidden>
+      <button type="button" id="b-erase" aria-pressed="false" title="Paint reality back (or right-drag)">Eraser</button>
+      <button type="button" id="b-clear" title="Clear the paint (Delete)">Clear</button>
     </div>
     <button type="button" id="b-layers" aria-pressed="false">Layers</button>
     <button type="button" id="b-glitch">Glitch</button>
@@ -162,6 +167,9 @@
     <p>Each scene is a fixed camera. The page knows the empty scene, so anyone who differs from it is a person. People
       are cut out every frame and shown in the other world wherever the rule says so.</p>
     <dl class="keys">
+      <dt>Paint</dt><dd>paint where the world shows; anyone whose feet step onto the paint walks into it. The eraser
+        (or a right-drag) paints reality back; scroll or <kbd>[</kbd> <kbd>]</kbd> size the brush; Delete clears.
+        <kbd>P</kbd> switches to it.</dd>
       <dt>Drag the picture</dt><dd>move the line or the portal ring; the lens follows the pointer; in Depth, the contour
         goes to the distance you point at</dd>
       <dt>Press and hold</dt><dd>flood: the world pours out from where you press (on a walker, from their feet), and

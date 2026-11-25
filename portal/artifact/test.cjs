@@ -7,7 +7,8 @@
 // ladder exact at its rungs, depth leaves nearer rows untouched) and Cut; Hold to flood (held at phases
 // with the video paused, the mouse gesture, a held full flood with the clip playing, its sound, a phone
 // long press); a person-only burst (deterministic, video paused); Layers; Depth; the world-change wave
-// (held at half way); the other scenes; your own video; phone.
+// (held at half way); Paint (exact outside the paint, erasing, the controls, a crossing onto it); the
+// other scenes; your own video; phone.
 const { chromium, devices } = require('playwright');
 const fs = require('fs');
 const path = require('path');
@@ -150,6 +151,74 @@ const meanAbs = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += M
       check(g.depth.near === 0 && g.depth.far > 10, `grow depth ${JSON.stringify(g.depth)}`);
       check(g.cut.real < 8 && g.cut.other > 2 * g.cut.real && g.cut.step > 30, `cut sides ${JSON.stringify(g.cut)}`);
     }
+
+    // Paint, video paused, Winter, in Grow and in Cut: nothing painted is the camera; a stroke changes only
+    // where it is painted (outside it the camera, exactly); erasing it gives the camera back, exactly
+    report.paint = await page.evaluate(async () => {
+      const p = window.__portal, s = p.state;
+      s.video.pause(); s.autoGlitch = false; s.burst = null;
+      await new Promise((r) => setTimeout(r, 400));
+      p.setWorld(s.worlds.findIndex((w) => w.kind === 0 && w.name === 'Winter'), true);
+      p.setMode(5);
+      const path = [[0.08, 0.75], [0.25, 0.8], [0.42, 0.72]], out = {};
+      for (const seam of ['grow', 'cut']) {
+        p.setSeam(seam); p.clearPaint(); p.renderNow();
+        const empty = p.compare(0, 1);
+        p.paint(path, { r: 40 }); p.renderNow();
+        const stroke = { inside: p.compareBox(0.15, 0.3, 0.74, 0.86), outside: p.compareBox(0, 1, 0, 0.45),
+                         at: p.paintAt(0.25, 0.8) };
+        p.paint(path, { r: 90, erase: true }); p.renderNow();
+        out[seam] = { empty, stroke, erased: p.compare(0, 1) };
+      }
+      p.clearPaint(); p.setSeam('grow');
+      return out;
+    });
+    for (const [seam, r] of Object.entries(report.paint)) {
+      check(r.empty === 0 && r.stroke.outside === 0 && r.stroke.inside > 20 && r.stroke.at > 0.99 && r.erased === 0,
+            `paint (${seam}) ${JSON.stringify(r)}`);
+    }
+    // the Paint controls: the button, a mouse stroke, a right-drag erases, the wheel sizes the brush, the
+    // Eraser toggle, Clear; the brush tools hide again on another rule
+    {
+      const view = await page.locator('#view').boundingBox();
+      const at = (x, y) => [view.x + x * view.width, view.y + y * view.height];
+      await page.click('[data-mode="5"]');
+      const tools = await page.evaluate(() => !document.getElementById('paint-tools').hidden);
+      await page.mouse.move(...at(0.45, 0.12)); await page.mouse.down();
+      await page.mouse.move(...at(0.75, 0.15), { steps: 10 }); await page.mouse.up();
+      const painted = await page.evaluate(() => window.__portal.paintAt(0.6, 0.135));
+      await page.mouse.move(...at(0.45, 0.13)); await page.mouse.down({ button: 'right' });
+      await page.mouse.move(...at(0.75, 0.14), { steps: 10 }); await page.mouse.up({ button: 'right' });
+      const erased = await page.evaluate(() => window.__portal.paintAt(0.6, 0.135));
+      const r0 = await page.evaluate(() => window.__portal.state.brush.r);
+      await page.mouse.wheel(0, -100); await sleep(200);
+      const r1 = await page.evaluate(() => window.__portal.state.brush.r);
+      await page.click('#b-erase');
+      const eraser = await page.getAttribute('#b-erase', 'aria-pressed');
+      await page.click('#b-erase');
+      await page.evaluate(() => window.__portal.paint([[0.2, 0.5], [0.8, 0.5]], { r: 60 }));
+      await page.click('#b-clear');
+      const cleared = await page.evaluate(() => { const p = window.__portal; p.renderNow(); return p.compare(0, 1); });
+      await page.click('[data-mode="0"]');
+      const hidden = await page.evaluate(() => document.getElementById('paint-tools').hidden);
+      report.paintUi = { tools, painted, erased, r0, r1, eraser, cleared, hidden };
+      check(tools && painted > 0.99 && erased === 0 && r1 > r0 && eraser === 'true' && cleared === 0 && hidden,
+            `paint controls ${JSON.stringify(report.paintUi)}`);
+    }
+    // a walker steps onto painted ground and crosses into the world (as at the opening, the right half is
+    // painted instead of the line drawn there)
+    report.paintCross = await page.evaluate(async () => {
+      const p = window.__portal, s = p.state;
+      p.setMode(5); p.clearPaint(); s.tracks = []; s.crossings = 0;
+      for (const x of [0.6, 0.72, 0.84, 0.96]) p.paint([[x, 0], [x, 1]], { r: 60 });
+      s.video.currentTime = s.scenes[s.scene].startTime || 0; s.video.play(); s.autoGlitch = true;
+      const t0 = performance.now();
+      while (s.crossings === 0 && performance.now() - t0 < 25000) await new Promise((r) => setTimeout(r, 250));
+      const out = { crossings: s.crossings, seconds: (performance.now() - t0) / 1000 };
+      p.clearPaint(); p.setMode(0);
+      return out;
+    });
+    check(report.paintCross.crossings > 0, `paint: nobody crossed onto the paint ${JSON.stringify(report.paintCross)}`);
 
     // drag the line (the handle takes no pointer events)
     const box = await page.locator('#view').boundingBox();

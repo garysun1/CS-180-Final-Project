@@ -13,7 +13,8 @@ shows; the eraser paints reality back; **Clear** resets.
 - The mask is uploaded as a texture after each stroke, and the shader reads *w* from it. In
   `ruleWeight` (app.js) and the shader's rule switch (compositor.js), Paint is one new mode.
 - Crossing works as for the other rules: someone whose feet enter a painted region crosses.
-- **v1:** one world, painted.
+- **v1 (built, `portal/paint.js`):** one world, painted; people change by the paint under their feet; the
+  brush's soft edge is the Morph band; a right-drag or the Eraser paints reality back; Delete clears.
 - **v2:** up to four worlds at once. The mask becomes RGBA, one channel per world, and the worlds go
   in a texture array, so winter can sit on the lawn while night fills the sky.
 
@@ -88,6 +89,23 @@ It does three things:
   stop arriving in patches.
 - Fix the night world's stray pool of light.
 - Decide whether Morph or Cut is the default.
+
+## Later: a moving camera (Meta Ray-Ban glasses)
+
+The whole method assumes a tripod: one background shared by every frame. A head-worn camera breaks
+that, so the first question is how far the idea stretches.
+
+1. **Turning in place.** When the wearer mostly turns their head, frames are related by homographies.
+   - Stitch them into one panorama (the course's mosaics project), with the median per panorama pixel.
+   - Restyle the panorama once.
+   - Warp it back into each frame with that frame's homography.
+   - People still come from the difference to the warped empty scene.
+2. **Walking.** Parallax breaks a single homography. Options, in order of effort:
+   - local warps;
+   - a layered video model (Neural Atlases, CoDeF) that learns the shared canvas;
+   - falling back to a video model on short clips.
+3. **First test:** 20 s from the glasses while turning slowly on the spot. Measure how far the stitched
+   panorama drifts at the seams before adding anything else.
 
 ## Timeline
 

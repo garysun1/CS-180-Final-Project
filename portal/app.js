@@ -4,6 +4,7 @@
 import { Compositor, IDENTITY_FIELD } from './compositor.js';
 import { PlateCapture, fitColourField, toImageData } from './plate.js';
 import { PortalAudio } from './audio.js';
+import { PaintMask } from './paint.js';
 
 const params = new URLSearchParams(location.search);
 // floodHint: after the first crossing, say once that holding floods (the hosted page)
@@ -13,9 +14,11 @@ const CFG = Object.assign({
 }, window.PORTAL_CONFIG || {});
 const $ = (id) => document.getElementById(id);
 const canvas = $('view');
-// Shader rule indices; the buttons and the M key go through them in UI order (depth before whole).
-const MODES = ['line', 'portal', 'lens', 'whole frame', 'depth'];
-const UI_MODES = [0, 1, 2, 4, 3];
+// Shader rule indices; the buttons and the M key go through them in UI order (paint after the line,
+// depth before whole). FEET: rules where a person changes as a whole, by where their feet are.
+const MODES = ['line', 'portal', 'lens', 'whole frame', 'depth', 'paint'];
+const UI_MODES = [0, 5, 1, 2, 4, 3];
+const FEET = new Set([1, 4, 5]);
 const SHADER_WORLDS = [
   { name: 'Night', kind: 1 }, { name: '1920s', kind: 2 }, { name: 'Winter', kind: 3 },
   { name: 'Comic', kind: 4 }, { name: 'Thermal', kind: 5 }, { name: 'Neon', kind: 6 },
@@ -52,7 +55,10 @@ const S = {
   server: false, job: null, loaded: new Set(), log: [],
   scenes: [], scene: -1, layers: false, layer: -1, wave: null, waveHold: null, dragged: false,
   flood: null, floods: 0, floodUsed: false, floodHinted: false,
+  // the brush: radius in px at 768 wide, erasing or not, and where the pointer is (for its outline)
+  brush: { r: 36, erase: false, at: null },
 };
+const paint = new PaintMask();
 let comp, seg = null, segmentFrame = null, audio;
 const work = document.createElement('canvas');
 const wctx = work.getContext('2d', { willReadFrequently: true });
@@ -218,7 +224,7 @@ function onVideoFrame() {
 }
 // ------------------------------------------------------------------ background difference (quarter res)
 // The selfie model finds people near the camera; a fixed camera also lets us find anyone who differs
-// from the empty scene (as crossover/masks.py does offline). Both are combined.
+// from the empty scene. Both are combined.
 const DW = 320;
 const small = document.createElement('canvas');
 const sctx = small.getContext('2d', { willReadFrequently: true });
@@ -334,6 +340,7 @@ function ruleWeight(x, y) {        // normalized camera coords -> 0 real .. 1 ot
     return Math.min(1, Math.max(0, (S.lens.r * H - d) / (3 * s) + 0.5));
   }
   if (S.mode === 4) return smooth01((farAt(x, y) - S.tau) / 0.06 + 0.5);
+  if (S.mode === 5) return Math.min(1, Math.max(0, (paint.at(x, y) - 0.5) / 0.06 + 0.5));
   return 1;
 }
 // Grow: how far the world has grown at a point, 0 .. 1 (compositor.js growU); people's colour follows it
@@ -352,6 +359,7 @@ function ruleU(x, y) {
     return c01((R - Math.hypot((x - S.lens.x) * W, (y - S.lens.y) * H)) / (0.5 * R));
   }
   if (S.mode === 4) return c01((farAt(x, y) - S.tau) / 0.25);
+  if (S.mode === 5) return paint.at(x, y);
   return 1;
 }
 function breath() { return REDUCED ? 1 : 1 + 0.05 * Math.sin(performance.now() / 1000 * 2 * Math.PI / 3); }
@@ -504,7 +512,7 @@ function analysePeople() {
   S.across = mass ? massIn / mass : 0;
   const a = aud(); if (a) a.setAcross(S.across);
   // (while a flood is open, render() uploads them every frame, fresh from its moving front)
-  if ((S.mode === 1 || S.mode === 4) && !fl) uploadPW(blobs, (b) => (S.seam === 'grow' ? b.u : b.w));
+  if (FEET.has(S.mode) && !fl) uploadPW(blobs, (b) => (S.seam === 'grow' ? b.u : b.w));
 }
 // The per-person weights (uPW) on the GW grid: each person's cells, grown by 2, hold value(blob) in 0..1
 // (r) and 255 (g: a person is here; compositor.js feetAt).
@@ -640,21 +648,43 @@ function ladderOf(w) {                   // {n steps above the plate, slot}; n 0
   const s = w ? S.slots.indexOf(w) : -1;
   return s < 0 ? { n: 0, slot: 0 } : { n: Math.min(2, (w.ladder || []).length) + 1, slot: s };
 }
+// The per-person weights (uPW) hold each person's value under the current rule and seam. When the rule,
+// the seam or the paint changes, recompute them from where people stand now (render does it once per
+// frame), or a paused frame keeps the old ones until the next analysed frame. A flood re-uploads its own.
+function refreshPW() {
+  if (!comp || !FEET.has(S.mode) || floodState(performance.now())) return;
+  const grow = S.seam === 'grow';
+  uploadPW(lastBlobs, (b) => { const r = personRule(b, null); return grow ? r.u : r.w; });
+}
 function setSeam(s, quiet = false) {
   S.seam = s === 'cut' ? 'cut' : 'grow';
-  // the per-person weights hold the seam's own value (Grow's u, Cut's w): swap them now, or a paused
-  // frame keeps the other seam's until the next analysed frame (a flood re-uploads them every frame)
-  if (comp && (S.mode === 1 || S.mode === 4) && !floodState(performance.now())) {
-    uploadPW(lastBlobs, (b) => (S.seam === 'grow' ? b.u : b.w));
-  }
+  S.pwStale = true;
   if (!quiet) toast(S.seam === 'grow' ? 'Morph: the world grows out of the filmed scene' : 'Cut: the exact seam');
   renderControls();
 }
+const MODE_TIPS = {
+  4: 'Rule: depth. Tap or drag to choose how far the other world begins.',
+  5: 'Paint where the world shows. Right-drag or the eraser paints reality back; scroll sizes the brush.',
+};
 function setMode(m, quiet = false) {
-  S.mode = m; S.tracks = []; S.burst = null;
-  if (!quiet) toast(m === 4 ? 'Rule: depth. Tap or drag to choose how far the other world begins.' : `Rule: ${MODES[m]}`);
+  S.mode = m; S.tracks = []; S.burst = null; S.pwStale = true;
+  if (!quiet) toast(MODE_TIPS[m] || `Rule: ${MODES[m]}`, m === 5 ? 4500 : 2600);
   renderControls();
 }
+// ------------------------------------------------------------------ the paint brush (paint.js)
+// A stroke paints the current world in (or, erasing, reality back) along the pointer's path. Sizes are
+// in px at 768 wide, like every other length on the page.
+function brushPx() { return S.brush.r * canvas.width / 768; }
+function paintStroke(x0, y0, x1, y1, erase) {
+  paint.resize(canvas.width, canvas.height);
+  paint.stroke(x0, y0, x1, y1, brushPx(), erase);
+  S.pwStale = true;
+}
+function clearPaint(quiet = false) {
+  paint.clear(); S.pwStale = true;
+  if (!quiet) toast('Paint cleared');
+}
+function setEraser(on) { S.brush.erase = on; renderControls(); }
 function setField(w, coeffs, gx = 1, gy = 1) {
   if (w.field) comp.gl.deleteTexture(w.field.tex);
   w.field = comp.newField(gx, gy, coeffs);
@@ -710,6 +740,7 @@ async function loadScene(i) {
     if (g !== sceneGen) return;
     removeImageWorlds();
     S.scene = i;
+    clearPaint(true);
     S.layers = false; S.layer = -1;
     await useSource('clip', { src: URL.createObjectURL(clip), plate, startTime: sc.startTime || 0 });
     setFar(far);
@@ -735,6 +766,7 @@ async function useVideoFile(file) {
   removeImageWorlds();
   S.scene = -1; S.plate = null; S.layers = false;
   movedSince = 0; movedWarned = false;
+  clearPaint(true);
   try {
     await useSource('clip', { src: URL.createObjectURL(file) });
     setFar(null);
@@ -835,6 +867,8 @@ function render(now, over = {}) {
   floodShown = fl ? fl.k : 0;
   if (fl) uploadPW(lastBlobs, (b) => { const r = personRule(b, fl); return grow ? r.u : r.w; });
   floodSound(fl);
+  if (paint.resize(W, H) || paint.dirty) { comp.uploadPaint(paint.canvas); paint.dirty = false; }
+  if (S.pwStale) { S.pwStale = false; refreshPW(); }
   const p = {
     bg, per, worldTex, field, mode: S.mode,
     seam: grow, band: S.band, lad, pattern, prevLad: S.wave ? ladderOf(S.wave.prevW) : null,
@@ -863,6 +897,7 @@ function render(now, over = {}) {
   S.flash *= 0.82; if (S.flash < 0.01) S.flash = 0;
   S.frames++;
   placeOverlays();
+  placeBrush();
   if (now - S.lastFpsT > 500) {
     S.fps = (S.frames - (S.fpsBase || 0)) * 1000 / (now - S.lastFpsT); S.fpsBase = S.frames; S.lastFpsT = now;
     const dbg = S.debug ? ` · ${S.fps.toFixed(0)} fps · mask ${S.segMs.toFixed(0)} ms (${S.delegate}) · gain ${S.gain.toFixed(2)}` : '';
@@ -945,6 +980,27 @@ function placeOverlays() {
   }
 }
 
+// The brush's outline follows the pointer in Paint (dashed while erasing).
+let brushEl = null;
+function placeBrush() {
+  const show = !S.layers && S.mode === 5 && !!S.brush.at && !!S.plate;
+  if (!brushEl) {
+    if (!show) return;
+    brushEl = document.createElement('div');
+    brushEl.className = 'overlay';
+    brushEl.style.cssText = 'border-radius:50%;border:1.5px solid rgba(255,255,255,.9);box-shadow:0 0 0 1px rgba(0,0,0,.45)';
+    $('stage').append(brushEl);
+  }
+  brushEl.hidden = !show;
+  if (!show) return;
+  const st = $('stage').getBoundingClientRect(), r = canvas.getBoundingClientRect();
+  const d = 2 * brushPx() * r.width / canvas.width;
+  const x = r.left - st.left + (S.mirror ? 1 - S.brush.at[0] : S.brush.at[0]) * r.width, y = r.top - st.top + S.brush.at[1] * r.height;
+  brushEl.style.width = brushEl.style.height = `${d}px`;
+  brushEl.style.transform = `translate(${x - d / 2}px, ${y - d / 2}px)`;
+  brushEl.style.borderStyle = S.brush.erase || (press && press.erase) ? 'dashed' : 'solid';
+}
+
 // ------------------------------------------------------------------ input
 function toFrame(e) {
   const r = canvas.getBoundingClientRect();
@@ -978,6 +1034,12 @@ canvas.addEventListener('pointerdown', (e) => {
   try { canvas.setPointerCapture(e.pointerId); } catch { /* not an active pointer (a synthetic event) */ }
   const [x, y] = toFrame(e);
   press = { id: e.pointerId, sx: e.clientX, sy: e.clientY, x, y, t: performance.now(), f: S.frames, kind: 'tap' };
+  if (S.mode === 5) {                            // Paint: every press is a stroke (no tap, drag or flood)
+    // the right button, Alt, a pen's eraser end or the Eraser toggle paint reality back
+    Object.assign(press, { kind: 'paint', erase: S.brush.erase || e.button === 2 || e.button === 5 || e.altKey, last: [x, y] });
+    paintStroke(x, y, x, y, press.erase);
+    S.brush.at = [x, y];
+  }
 });
 // (each frame, from render) the press has been held still long enough: a flood, from now
 function holdCheck(now) {
@@ -997,6 +1059,16 @@ function unhold(p, at) {
 canvas.addEventListener('pointermove', (e) => {
   if (S.layers) return;
   const p = press;
+  if (S.mode === 5) S.brush.at = toFrame(e);
+  if (p && p.kind === 'paint' && e.pointerId === p.id) {
+    // every sample the browser saw since the last event, so a fast stroke follows the hand
+    for (const c of (e.getCoalescedEvents ? e.getCoalescedEvents() : []).concat([e])) {
+      const [x, y] = toFrame(c);
+      paintStroke(p.last[0], p.last[1], x, y, p.erase);
+      p.last = [x, y];
+    }
+    return;
+  }
   if (p && e.pointerId === p.id) {
     const moved = Math.hypot(e.clientX - p.sx, e.clientY - p.sy) > SLOP_PX;
     if (p.kind === 'flood' && moved && e.timeStamp < p.at) unhold(p, e.timeStamp);
@@ -1025,6 +1097,7 @@ function endPress(e, cancelled) {
   if (!cancelled && S.mode === 0) S.dragged = true;
 }
 canvas.addEventListener('pointerup', (e) => endPress(e, false));
+canvas.addEventListener('pointerleave', () => { S.brush.at = null; });
 canvas.addEventListener('pointercancel', (e) => endPress(e, true));
 canvas.addEventListener('lostpointercapture', (e) => endPress(e, true));
 function onPointer(e) { place(...toFrame(e)); }
@@ -1044,7 +1117,12 @@ canvas.addEventListener('wheel', (e) => {
   if (S.mode === 1) S.portal.r = Math.min(0.6, Math.max(0.05, S.portal.r * k));
   if (S.mode === 2) S.lens.r = Math.min(0.8, Math.max(0.05, S.lens.r * k));
   if (S.mode === 4) S.tau = Math.min(0.98, Math.max(0.02, S.tau + (e.deltaY > 0 ? -0.02 : 0.02)));
+  if (S.mode === 5) setBrush(S.brush.r * k);
 }, { passive: false });
+function setBrush(r) {                           // 6 .. 200 px at 768 wide
+  S.brush.r = Math.min(200, Math.max(6, r));
+  toast(`Brush ${Math.round(S.brush.r)} px`, 1000);
+}
 
 function glitchBurst() { S.glitchUntil = performance.now() + (REDUCED ? 500 : 1500); }
 function toggleCycle() { S.autoCycle = !S.autoCycle; S.lastCycle = performance.now(); toast(`Auto-cycle ${S.autoCycle ? 'on' : 'off'}`); renderControls(); }
@@ -1095,6 +1173,10 @@ addEventListener('keydown', (e) => {
   else if (k === 'escape' && $('help') && !$('help').hidden) toggleHelp(false);
   else if (k === 'escape' && S.layers) { if (S.layer >= 0 && !narrowStage()) S.layer = -1; else toggleLayers(false); }
   else if (k === 'h') toggleHelp();
+  else if (k === 'p') setMode(5);
+  else if (S.mode === 5 && e.key === '[') setBrush(S.brush.r / 1.2);
+  else if (S.mode === 5 && e.key === ']') setBrush(S.brush.r * 1.2);
+  else if (S.mode === 5 && (e.key === 'Backspace' || e.key === 'Delete')) clearPaint();
   else if (e.key === '[') S.line.angle -= 0.05;
   else if (e.key === ']') S.line.angle += 0.05;
   else if (e.key === 'ArrowLeft') S.line.x = Math.max(0, S.line.x - 0.01);
@@ -1140,6 +1222,8 @@ function renderControls() {
   if ($('b-layers')) $('b-layers').setAttribute('aria-pressed', String(S.layers));
   if ($('b-sound')) { $('b-sound').setAttribute('aria-pressed', String(!S.muted)); $('b-sound').textContent = S.muted ? 'Sound off' : 'Sound on'; }
   if ($('b-seam')) $('b-seam').setAttribute('aria-pressed', String(S.seam === 'grow'));
+  if ($('paint-tools')) $('paint-tools').hidden = S.mode !== 5;
+  if ($('b-erase')) $('b-erase').setAttribute('aria-pressed', String(S.brush.erase));
   const box = $('worlds');
   if (box) {
     const titles = { generated: 'AI-generated · made once', yours: 'Your images', filter: 'Filters (no AI)' };
@@ -1168,6 +1252,7 @@ function bindControls() {
   const on = (id, fn) => { if ($(id)) $(id).addEventListener('click', fn); };
   on('b-glitch', glitchBurst); on('b-cycle', toggleCycle); on('b-sound', toggleSound); on('b-layers', () => toggleLayers());
   on('b-seam', toggleSeam);
+  on('b-erase', () => setEraser(!S.brush.erase)); on('b-clear', () => clearPaint());
   on('b-full', toggleFullscreen); on('b-help', () => toggleHelp()); on('help-close', () => toggleHelp(false));
   on('b-upload', () => {
     toast('Pick a clip from a fixed camera (a tripod or a propped phone) with people walking through. MP4 works best.', 5000);
@@ -1309,6 +1394,15 @@ window.__portal = {
   },
   // draw a frame now (then compare() reads it)
   renderNow() { return render(performance.now()); },
+  // Paint: a stroke through points [[x, y], ...] (frame fractions) with brush radius r (px at 768 wide);
+  // clear; the painted value at a point
+  paint(points, { r = 36, erase = false } = {}) {
+    const keep = S.brush.r; S.brush.r = r;
+    points.forEach(([x, y], i) => { const [px, py] = points[Math.max(0, i - 1)]; paintStroke(px, py, x, y, erase); });
+    S.brush.r = keep;
+  },
+  clearPaint: () => clearPaint(true),
+  paintAt: (x, y) => paint.at(x, y),
   // the seam: 'grow' or 'cut'; the line's morph band in px (at 768 wide)
   setSeam: (s) => setSeam(s, true),
   setBand: (px) => { S.band = px; },

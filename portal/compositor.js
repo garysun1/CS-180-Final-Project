@@ -1,11 +1,12 @@
-// WebGL2 compositor: the same equation as crossover/composite.py, run per pixel on the GPU.
+// WebGL2 compositor: the project's composite equation, run per pixel on the GPU.
 //
 //   out = (1 - w) * F + w * [ P + (1 - a) * (R - Q) * S ]
 //
 // F camera frame, B clean plate, R the world (a generated image or a shader world computed from B),
 // a person alpha (live mask, holes filled by a plate-difference test near people), P the person in
 // the world's style, Q the plate in that same style (swaps the old background out of soft edges),
-// S shadow ratio near people, w the rule: a line, a ring on the floor, a lens, a depth split, or all.
+// S shadow ratio near people, w the rule: a line, a ring on the floor, a lens, a depth split, a mask
+// painted by hand (paint.js), or all.
 //
 // People entering a generated world get the paper's local colour field (crossover/colormap.py): a
 // smooth grid of 3x4 colour affines fitted from the empty scene to the world, baked per world by
@@ -33,7 +34,7 @@ void main() { gl_Position = vec4(aPos, 0.0, 1.0); }`;
 const FS = `#version 300 es
 precision highp float;
 precision highp int;
-uniform sampler2D uCam, uMask, uPlate, uWorld, uPW, uWorldPrev;
+uniform sampler2D uCam, uMask, uPlate, uWorld, uPW, uWorldPrev, uPaint;
 uniform highp sampler2D uAffT, uFar;
 uniform highp sampler2DArray uLad;
 uniform vec2 uRes;
@@ -249,6 +250,10 @@ float modeWeight(vec2 px, float a, vec2 uv) {
     float wb = smoothstep(0.0, 1.0, (farAt(uv).x - uTau) / 0.06 + 0.5);
     return a * texture(uPW, uv).r + (1.0 - a) * wb;      // people by the depth at their feet
   }
+  if (uMode == 5) {                                       // painted by hand: the seam at half coverage
+    float wb = clamp((texture(uPaint, uv).r - 0.5) / 0.06 + 0.5, 0.0, 1.0);
+    return a * texture(uPW, uv).r + (1.0 - a) * wb;      // people by the paint under their feet
+  }
   return 1.0;
 }
 // Grow: how far the world has grown at a pixel, 0 (the filmed scene) .. 1 (the whole world), one-sided:
@@ -258,6 +263,7 @@ float ruleGrow(vec2 px, vec2 uv) {
   if (uMode == 1) return clamp((1.0 - ringQ(px)) / 0.6, 0.0, 1.0);
   if (uMode == 2) return clamp((uLensR - length(px - uLens)) / (0.5 * uLensR), 0.0, 1.0);
   if (uMode == 4) return clamp((farAt(uv).x - uTau) / 0.25, 0.0, 1.0);
+  if (uMode == 5) return texture(uPaint, uv).r;          // the brush's soft edge is the band
   return 1.0;
 }
 // A person's level where they stand: uPW holds each tracked person's value (r) where they are (g = 1),
@@ -298,6 +304,13 @@ vec3 seamGlow(vec2 px, float a, vec2 uv, bool grow) {
     vec2 fg = farAt(uv);
     float d = (fg.x - uTau) / max(fg.y, 1e-4) / uS;        // distance to the contour, in pixels
     g = exp(-(d / 2.5) * (d / 2.5)) * 0.85 * (1.0 - a);
+  } else if (uMode == 5 && !grow) {                       // a thin outline where the paint crosses half
+    vec2 t = 1.0 / vec2(textureSize(uPaint, 0));
+    float p = texture(uPaint, uv).r;
+    vec2 gr = vec2(texture(uPaint, uv + vec2(t.x, 0.0)).r - texture(uPaint, uv - vec2(t.x, 0.0)).r,
+                   texture(uPaint, uv + vec2(0.0, t.y)).r - texture(uPaint, uv - vec2(0.0, t.y)).r) * 0.5;
+    float d = (p - 0.5) / max(length(gr), 1e-3) / uS;       // distance to the outline, in pixels
+    g = exp(-(d / 2.0) * (d / 2.0)) * 0.6 * (1.0 - a) * step(0.02, length(gr));
   }
   if (uFloodOn > 0.5) {
     float t = floodIn(px) / (4.5 * uS);
@@ -361,7 +374,7 @@ vec3 compose(vec2 uv) {
   bool grow = uSeam == 1;
   if (uHasPlate < 0.5) return 1.0 - (1.0 - F) * (1.0 - seamGlow(px, 0.0, uv, false));
   bool flood = uFloodOn > 0.5;
-  bool box = inGlitchBox(uv), feet = uMode == 1 || uMode == 4 || flood;   // feet: people change by where they stand
+  bool box = inGlitchBox(uv), feet = uMode == 1 || uMode == 4 || uMode == 5 || flood;   // feet: people change by where they stand
   float u = 1.0, up = 1.0;
   if (grow) {
     u = uForceRung >= 0.0 ? 1.0 : growU(px, uv);
@@ -443,7 +456,7 @@ vec3 layerView(int v, vec2 uv) {
   }
   if (v == 5) {                                                                // the rule (grow: u, a gradient)
     float u = growU(px, uv);
-    bool feet = uMode == 1 || uMode == 4 || uFloodOn > 0.5;
+    bool feet = uMode == 1 || uMode == 4 || uMode == 5 || uFloodOn > 0.5;
     float w = uSeam == 1 ? (feet ? a * feetAt(uv, u) + (1.0 - a) * u : u) : cutWeight(px, a, uv);
     return mix(vec3(0.04, 0.05, 0.07), vec3(0.42, 0.72, 1.0), w) + seamGlow(px, a, uv, uSeam == 1);
   }
@@ -494,7 +507,8 @@ export class Compositor {
     const a = gl.getAttribLocation(this.prog, 'aPos');
     gl.enableVertexAttribArray(a);
     gl.vertexAttribPointer(a, 2, gl.FLOAT, false, 0, 0);
-    this.tex = { cam: this.newTexture(), mask: this.newTexture(), plate: this.newTexture(), pw: this.newTexture() };
+    this.tex = { cam: this.newTexture(), mask: this.newTexture(), plate: this.newTexture(), pw: this.newTexture(),
+                paint: this.newTexture() };
     this.identityField = this.newField(1, 1, IDENTITY_FIELD);
     this.noFar = this.newFar(1, 1, new Float32Array([0, 0]));
     this.lad = null;
@@ -621,6 +635,15 @@ export class Compositor {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, w, h, 0, gl.RED, gl.UNSIGNED_BYTE, data);
   }
 
+  // the paint mask (paint.js): its canvas's red channel, one byte per frame pixel
+  uploadPaint(canvas) {
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, this.tex.paint);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, gl.RED, gl.UNSIGNED_BYTE, canvas);
+  }
+
   // two bytes per texel (the per-person weights: value, and 255 where a person is)
   uploadRG8(t, data, w, h) {
     const gl = this.gl;
@@ -668,6 +691,9 @@ export class Compositor {
     gl.activeTexture(gl.TEXTURE8);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.lad ? this.lad.tex : this.noLad);
     gl.uniform1i(this._u('uLad'), 8);
+    gl.activeTexture(gl.TEXTURE9);
+    gl.bindTexture(gl.TEXTURE_2D, this.tex.paint);
+    gl.uniform1i(this._u('uPaint'), 9);
     const f = (n, v) => gl.uniform1f(this._u(n), v);
     const i1 = (n, v) => gl.uniform1i(this._u(n), v);
     gl.uniform2f(this._u('uRes'), W, H);

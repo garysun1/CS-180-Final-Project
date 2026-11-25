@@ -55,7 +55,7 @@ SCENES = [
          depth="out/clips/cartraffic01/depth_disparity.npy", start_world="Cyberpunk", tau=0.5,
          portal=dict(x=0.55, y=0.62, r=0.2)),
 ]
-JS = ["app.js", "compositor.js", "plate.js", "audio.js"]      # segment.js is not needed: no segmenter here
+JS = ["app.js", "compositor.js", "plate.js", "audio.js", "paint.js"]      # segment.js is not needed: no segmenter here
 CSP = ("default-src 'none'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net/npm/ "
        "https://unpkg.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; "
        "img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; worker-src blob:")
