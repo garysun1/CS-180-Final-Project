@@ -15,8 +15,13 @@ shows; the eraser paints reality back; **Clear** resets.
 - Crossing works as for the other rules: someone whose feet enter a painted region crosses.
 - **v1 (built, `portal/paint.js`):** one world, painted; people change by the paint under their feet; the
   brush's soft edge is the Morph band; a right-drag or the Eraser paints reality back; Delete clears.
-- **v2:** up to four worlds at once. The mask becomes RGBA, one channel per world, and the worlds go
-  in a texture array, so winter can sit on the lawn while night fills the sky.
+- **v2 (built):** several worlds at once. There is one mask per world, and a stroke paints its world in
+  while erasing the others under it, so the newest paint wins. Each painted world is drawn as one more
+  full-frame pass, blended over the last by its mask, and people belong to the world under their feet.
+  Undo (Ctrl+Z, or the Undo button) re-paints every stroke but the last.
+- **Next:**
+  - a softness setting, which would also set the width of the Morph band;
+  - saving the painting with the scene, for the CLI and for export.
 
 **Test:**
 - `test.cjs` paints a stroke and checks two things: outside the stroke the frame equals the camera

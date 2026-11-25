@@ -7,8 +7,8 @@
 // ladder exact at its rungs, depth leaves nearer rows untouched) and Cut; Hold to flood (held at phases
 // with the video paused, the mouse gesture, a held full flood with the clip playing, its sound, a phone
 // long press); a person-only burst (deterministic, video paused); Layers; Depth; the world-change wave
-// (held at half way); Paint (exact outside the paint, erasing, the controls, a crossing onto it); the
-// other scenes; your own video; phone.
+// (held at half way); Paint (exact outside the paint, erasing, several worlds at once, undo, the controls,
+// a crossing onto it); the other scenes; your own video; phone.
 const { chromium, devices } = require('playwright');
 const fs = require('fs');
 const path = require('path');
@@ -177,6 +177,44 @@ const meanAbs = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += M
       check(r.empty === 0 && r.stroke.outside === 0 && r.stroke.inside > 20 && r.stroke.at > 0.99 && r.erased === 0,
             `paint (${seam}) ${JSON.stringify(r)}`);
     }
+    // Several worlds at once, video paused, in Cut and Grow: Winter painted on the left lawn and Night on the
+    // right each look as they do painted alone; outside both the frame is the camera; Night painted over
+    // Winter takes that part over; undo brings Winter back; Clear gives the camera back, and undo the paint
+    report.paintMulti = await page.evaluate(async () => {
+      const p = window.__portal, s = p.state;
+      s.video.pause(); s.autoGlitch = false; s.burst = null;
+      await new Promise((r) => setTimeout(r, 400));
+      const idx = (n) => s.worlds.findIndex((w) => w.kind === 0 && w.name === n);
+      const W = idx('Winter'), N = idx('Night');
+      const L = [[0.05, 0.85], [0.3, 0.85]], R = [[0.6, 0.8], [0.9, 0.85]];
+      const boxL = [0.1, 0.78, 0.25, 0.9], boxR = [0.65, 0.75, 0.85, 0.88];
+      const mean = (a, b) => { let t = 0; for (let i = 0; i < a.length; i++) t += Math.abs(a[i] - b[i]); return t / a.length; };
+      p.setMode(5);
+      const out = {};
+      for (const seam of ['grow', 'cut']) {
+        p.setSeam(seam);
+        p.resetPaint(); p.paint(L, { r: 50, world: W }); const refL = p.regions(boxL).inside;
+        p.resetPaint(); p.paint(R, { r: 50, world: N }); const refR = p.regions(boxR).inside;
+        p.resetPaint(); p.paint(L, { r: 50, world: W }); p.paint(R, { r: 50, world: N });
+        const both = { left: mean(p.regions(boxL).inside, refL), right: mean(p.regions(boxR).inside, refR),
+                       outside: p.compareBox(0, 1, 0, 0.5), worlds: p.paintedWorlds().length };
+        p.paint([[0.1, 0.85], [0.2, 0.85]], { r: 50, world: N });
+        const takenOver = p.paintWorldAt(0.15, 0.85) === N;
+        p.undoPaint();
+        const undone = { winter: p.paintWorldAt(0.15, 0.85) === W, left: mean(p.regions(boxL).inside, refL) };
+        p.clearPaint(); p.renderNow();
+        const cleared = p.compare(0, 1);
+        p.undoPaint();
+        out[seam] = { both, takenOver, undone, cleared, afterUndoClear: p.paintedWorlds().length };
+      }
+      p.resetPaint(); p.setSeam('grow'); p.setMode(0);
+      return out;
+    });
+    for (const [seam, m] of Object.entries(report.paintMulti)) {
+      check(m.both.left < 1.5 && m.both.right < 1.5 && m.both.outside === 0 && m.both.worlds === 2 && m.takenOver &&
+            m.undone.winter && m.undone.left < 1.5 && m.cleared === 0 && m.afterUndoClear === 2,
+            `paint, several worlds (${seam}) ${JSON.stringify(m)}`);
+    }
     // the Paint controls: the button, a mouse stroke, a right-drag erases, the wheel sizes the brush, the
     // Eraser toggle, Clear; the brush tools hide again on another rule
     {
@@ -197,12 +235,15 @@ const meanAbs = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += M
       const eraser = await page.getAttribute('#b-erase', 'aria-pressed');
       await page.click('#b-erase');
       await page.evaluate(() => window.__portal.paint([[0.2, 0.5], [0.8, 0.5]], { r: 60 }));
+      await page.click('#b-undo');
+      const undone = await page.evaluate(() => window.__portal.paintAt(0.5, 0.5));
+      await page.evaluate(() => window.__portal.paint([[0.2, 0.5], [0.8, 0.5]], { r: 60 }));
       await page.click('#b-clear');
       const cleared = await page.evaluate(() => { const p = window.__portal; p.renderNow(); return p.compare(0, 1); });
       await page.click('[data-mode="0"]');
       const hidden = await page.evaluate(() => document.getElementById('paint-tools').hidden);
-      report.paintUi = { tools, painted, erased, r0, r1, eraser, cleared, hidden };
-      check(tools && painted > 0.99 && erased === 0 && r1 > r0 && eraser === 'true' && cleared === 0 && hidden,
+      report.paintUi = { tools, painted, erased, r0, r1, eraser, undone, cleared, hidden };
+      check(tools && painted > 0.99 && erased === 0 && r1 > r0 && eraser === 'true' && undone === 0 && cleared === 0 && hidden,
             `paint controls ${JSON.stringify(report.paintUi)}`);
     }
     // a walker steps onto painted ground and crosses into the world (as at the opening, the right half is

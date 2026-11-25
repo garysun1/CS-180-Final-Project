@@ -8,7 +8,7 @@
 
 ## What it is
 
-Cross the Line is a browser tool for videos shot from a fixed camera. It redraws the empty scene as AI worlds such as winter, night, the 1920s or a Van Gogh painting. You decide where each world shows: paint it on with a brush, or put it on one side of a line, inside a ring on the ground, under a lens, or over the whole frame. The real people are cut out of the video and put back, tinted to the light of the world they stand in. Anyone who walks across the line walks into another world.
+Cross the Line is a browser tool for videos shot from a fixed camera. It redraws the empty scene as AI worlds such as winter, night, the 1920s or a Van Gogh painting. You decide where each world shows: paint several worlds on with a brush, or put one on one side of a line, inside a ring on the ground, under a lens, or over the whole frame. The real people are cut out of the video and put back, tinted to the light of the world they stand in. Anyone who walks across the line walks into another world.
 
 Today's AI video tools redraw every frame. That is slow, it flickers, and it changes people's faces. With a tripod, every frame shares one background, so we redraw that background once.
 
@@ -16,7 +16,7 @@ Today's AI video tools redraw every frame. That is slow, it flickers, and it cha
 
 1. **Load a scene:** one of three recorded clips, or your own tripod video ("Your video").
 2. **Pick a world:** generated once by Stable Diffusion, a colour filter, or an image you drop in.
-3. **Choose where it shows:** **Paint** it on (right-drag erases, scroll sizes the brush), or pick Line, Portal (a ring on the ground), Lens or Whole frame and drag to move it.
+3. **Choose where it shows:** **Paint** it on, then pick another world and paint again: several worlds at once (right-drag erases, Ctrl+Z undoes). Or pick Line, Portal (a ring on the ground), Lens or Whole frame and drag to move it.
 4. **Watch:** people take on the world's light as they cross into it. **Layers** shows how each frame is built.
 
 ## The demo video (60–90 s, a screen recording of the interface)
@@ -26,7 +26,7 @@ Today's AI video tools redraw every frame. That is slow, it flickers, and it cha
 | 0:00 | The plaza plays, untouched. |
 | 0:05 | Pick Winter and drag the line in. Walkers cross into the snow. |
 | 0:20 | Switch to Portal: a ring of Van Gogh on the ground that people step into. |
-| 0:35 | Paint: brush snow onto the lawn, then erase a path through it. People turn wintry as they step onto the paint. |
+| 0:35 | Paint: snow on the lawn, night on the building, a Van Gogh path down the road. People change world as they step from one to the next. |
 | 0:50 | Layers: the filmed frame, the empty scene, the world, the people, the mask, the result. |
 | 1:05 | "Your video": drop a clip, the empty scene appears, pick a world. |
 | 1:20 | Export and play the result (coming). |
@@ -48,7 +48,7 @@ Today's AI video tools redraw every frame. That is slow, it flickers, and it cha
 | **People** | A pixel is a person if its colour differs enough from the empty scene. Brightness counts less, so shadows stay out of the mask. Small specks are removed and bodies filled in. | `portal/app.js` (`combineMasks`) |
 | **People's light** | A smooth grid of colour transforms is fitted from the empty scene to the world (robust least squares) and applied to people, so a lamp's warm pool tints whoever walks under it. | `crossover/colormap.py`, baked into each scene |
 | **Shadows** | Near people, the frame is darker than the empty scene by some ratio. The world is darkened by the same ratio, so shadows carry over in the world's colours. | `portal/compositor.js` |
-| **Masks** | Each rule gives a weight *w* between 0 (real) and 1 (world) per pixel. **Paint:** a grey image you paint, one value per pixel, uploaded to the GPU after each stroke. **Line:** which side of the line. **Portal:** inside an ellipse on the ground. **Lens:** inside a circle. **Whole:** everywhere. For Paint and Portal a person changes all at once, by the value under their feet. | `portal/paint.js`, `portal/app.js` (`ruleWeight`), `portal/compositor.js` |
+| **Masks** | Each rule gives a weight *w* between 0 (real) and 1 (world) per pixel. **Paint:** one grey image per world, painted by hand. A stroke paints its world in and erases the others there, so the newest paint wins. Each painted world is drawn as one more pass, blended over the last by its mask. **Line:** which side of the line. **Portal:** inside an ellipse on the ground. **Lens:** inside a circle. **Whole:** everywhere. For Paint and Portal a person changes all at once, by the value under their feet. | `portal/paint.js`, `portal/app.js` (`ruleWeight`), `portal/compositor.js` |
 | **Composite** | out = (1 − *w*)·F + *w*·[P + (1 − *a*)(R − Q)·S]. F is the frame, R the world, *a* the person mask, P the person in the world's colours, Q the empty scene in the world's colours, S the shadow. Where *w* = 0 the output is the camera pixel. | `portal/compositor.js` |
 | **Layers** | The same shader draws each term of the composite as its own tile. | `portal/compositor.js` |
 | **Crossing glitch** | When someone's feet cross into the world, a short RGB-split burst plays on that person only. | `portal/app.js` (`onCrossing`) |
@@ -61,7 +61,6 @@ Today's AI video tools redraw every frame. That is slow, it flickers, and it cha
   - your own video (with colour-filter worlds and dropped images);
   - a live-camera kiosk that makes worlds for the room in front of it.
 - **Next:**
-  - painting several worlds at once (Paint shows one world today);
   - exporting the result as a video;
   - generating AI worlds for your own video inside the page.
 - **Later:** both have early versions in the interface.

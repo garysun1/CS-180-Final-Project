@@ -49,7 +49,11 @@ uniform float uHasFar, uTau, uWave, uWaveOn, uBurst, uBurstEdge;
 uniform float uBand, uLadN, uLadBase, uPrevN, uPrevBase, uForceRung, uBurstC;
 uniform vec3 uFlood;
 uniform float uFloodOn, uFloodSq, uFloodBand, uFloodK;
+// uLayer 1: a painted world laid over the frame drawn so far (several worlds painted at once): the
+// output is this world's side, with its weight w as alpha (compose leaves w in gW)
+uniform float uLayer;
 out vec4 o;
+float gW;
 
 float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
 float hash(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
@@ -369,6 +373,7 @@ vec3 growBackground(float t, bool prev, vec2 uv, vec2 px, vec3 B, vec3 Rn, vec3 
 // the picture is the filmed scene. A flood adds its ring to u (growU) and to Cut's w (cutWeight), and
 // people then go by their feet, as on the portal.
 vec3 compose(vec2 uv) {
+  gW = 0.0;
   vec2 px = uv * uRes;
   vec3 F = texture(uCam, uv).rgb;
   bool grow = uSeam == 1;
@@ -426,7 +431,8 @@ vec3 compose(vec2 uv) {
     w = cutWeight(px, a, uv);
   }
   vec3 rs = a > 0.004 ? P + (1.0 - a) * (R - Q) * S : R * S;
-  vec3 c = mix(F, clamp(rs, 0.0, 1.0), w);
+  vec3 c = mix(F, clamp(rs, 0.0, 1.0), uLayer > 0.5 ? 1.0 : w);
+  gW = w;
   c = 1.0 - (1.0 - c) * (1.0 - seamGlow(px, a, uv, grow));
   if (box && a < 0.5) {                                   // ink outline; misregistered edges right after a switch
     if (edgeAt(uv) > 0.5) c = vec3(0.07, 0.06, 0.08);
@@ -470,6 +476,8 @@ void main() {
   vec2 fc = gl_FragCoord.xy - uVP.xy;                     // this tile's pixel (GL: bottom-left origin)
   vec2 uv = vec2(fc.x / uVP.z, 1.0 - fc.y / uVP.w);
   if (uMirror > 0.5) uv.x = 1.0 - uv.x;
+  // a painted world over the others: nothing to add where it has no paint and none of its people stand
+  if (uLayer > 0.5 && uView == 0 && uGlitch == 0.0 && texture(uPaint, uv).r <= 0.0 && texture(uPW, uv).r <= 0.0) discard;
   vec3 c = vec3(0.0);
   if (uView != 0) {
     c = layerView(uView, uv);
@@ -488,7 +496,7 @@ void main() {
       if (n == 1) c = ci; else c[i] = ci[i];
     }
   }
-  o = vec4(mix(c, vec3(1.0), uFlash), 1.0);
+  o = vec4(mix(c, vec3(1.0), uFlash), uLayer > 0.5 && uView == 0 ? gW : 1.0);
 }`;
 
 export class Compositor {
@@ -635,10 +643,10 @@ export class Compositor {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, w, h, 0, gl.RED, gl.UNSIGNED_BYTE, data);
   }
 
-  // the paint mask (paint.js): its canvas's red channel, one byte per frame pixel
-  uploadPaint(canvas) {
+  // a paint mask (paint.js): its canvas's red channel, one byte per frame pixel
+  uploadPaint(t, canvas) {
     const gl = this.gl;
-    gl.bindTexture(gl.TEXTURE_2D, this.tex.paint);
+    gl.bindTexture(gl.TEXTURE_2D, t);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, gl.RED, gl.UNSIGNED_BYTE, canvas);
@@ -680,6 +688,7 @@ export class Compositor {
     gl.useProgram(this.prog);
     gl.bindVertexArray(this.vao);
     const field = p.field || this.identityField;
+    const f0 = (n, v) => gl.uniform1f(this._u(n), v);
     const units = [['uCam', this.tex.cam], ['uMask', this.tex.mask], ['uPlate', this.tex.plate],
                    ['uWorld', p.worldTex || this.tex.plate], ['uPW', this.tex.pw], ['uAffT', field.tex],
                    ['uFar', p.farTex || this.noFar], ['uWorldPrev', p.prevTex || this.tex.plate]];
@@ -692,8 +701,13 @@ export class Compositor {
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.lad ? this.lad.tex : this.noLad);
     gl.uniform1i(this._u('uLad'), 8);
     gl.activeTexture(gl.TEXTURE9);
-    gl.bindTexture(gl.TEXTURE_2D, this.tex.paint);
+    gl.bindTexture(gl.TEXTURE_2D, p.paintTex || this.tex.paint);
     gl.uniform1i(this._u('uPaint'), 9);
+    f0('uLayer', p.layer ? 1 : 0);
+    if (p.layer) {                       // over what is drawn: colour by this world's weight, alpha stays 1
+      gl.enable(gl.BLEND);
+      gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ZERO, gl.ONE);
+    } else gl.disable(gl.BLEND);
     const f = (n, v) => gl.uniform1f(this._u(n), v);
     const i1 = (n, v) => gl.uniform1i(this._u(n), v);
     gl.uniform2f(this._u('uRes'), W, H);
