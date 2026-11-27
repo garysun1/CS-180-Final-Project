@@ -112,12 +112,42 @@ that, so the first question is how far the idea stretches.
 3. **First test:** 20 s from the glasses while turning slowly on the spot. Measure how far the stitched
    panorama drifts at the seams before adding anything else.
 
+**What exists** (from the sweep; product facts are search snippets):
+- Meta's Restyle already restyles glasses footage after capture, in clips of about 10 s, and it changes
+  the people too.
+- Decart XR restyles a Quest headset's camera view live, with about a second of lag.
+- Neither keeps people as filmed or draws a stable world once, so that combination is still open.
+- Record on the glasses and process afterwards: recorded clips are sharper than the developer
+  toolkit's live stream.
+- The Aria Everyday Activities dataset has head-worn clips to develop on before filming.
+
+## Options from the state-of-the-art sweep (27 November)
+
+Existing work we could build on, from [state of the art](state-of-the-art.md). None is started. Each
+row says what it would add to the explanation of our method.
+
+| Option | Built on | Adds to the explanation | Effort | Risk |
+|---|---|---|---|---|
+| **Export** as MP4, exact frames | Mediabunny (MPL-2.0) on WebCodecs | Nothing: a product feature | 1–1.5 days | Medium: browser support; the hosted page may need a file-save permission |
+| **Proof:** a per-frame Stable Diffusion baseline next to ours | The measures recent papers report: warp error (RAFT), frame-to-frame similarity (CLIP), PSNR on people | One number | 1 day | Low |
+| **Click to paint** a whole region | SlimSAM (Apache-2.0), run once on the empty scene | One sentence: "Segment Anything, once, on the empty scene" | 1 day | Low |
+| **Cleaner people** | BackgroundMattingV2 (MIT), which takes a frame plus a clean plate; or our archived edge-refined matte | One sentence: "a matting model that is given the empty scene" | 1.5–2 days | Medium: it was trained on people near the camera |
+| **Sharper worlds** | SDXL + ControlNet-Union, or FLUX.2 Klein 4B, on a Colab GPU | Nothing: a better image model for the same step | 0.5–1.5 days | Medium: needs a GPU. Decided against for now |
+
+Suggested order: Export and Proof first, because neither adds anything to the method.
+
+**Ideas for the demo video, borrowed from the sweep:**
+- Open on a half-real, half-winter frame, with someone crossing within two seconds.
+- Film one unbroken walk across a line, a ring and painted patches: "world jumping" in space instead
+  of in time.
+- Tagline: "The world changes. You don't."
+
 ## Timeline
 
 | When | Done |
 |---|---|
-| Check-in 2 (11/30–12/4) | Paint v1, Export v1, a first cut of the demo video |
-| By 12/6 | Paint v2 (several worlds), AI worlds for your own video, Sather Gate scene, final demo video |
+| Check-in 2 (11/30–12/4) | Paint with several worlds (done), the survey and the simple story (done), Export, a first cut of the demo video |
+| By 12/6 | AI worlds for your own video, Sather Gate scene, final demo video |
 | 12/8 or 12/10 | 2-minute presentation |
 | 12/15 | Final report |
 | After | Depth and Morph |

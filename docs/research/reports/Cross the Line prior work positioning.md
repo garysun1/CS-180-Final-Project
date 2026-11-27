@@ -1,5 +1,9 @@
 # Cross the Line prior work positioning
 
+> **Superseded (27 November 2026).** The current pitch, the closest work and what we added are in
+> [docs/state-of-the-art.md](../../state-of-the-art.md). This page is the 24 November version: its pitch
+> line and its flicker claims are out of date.
+
 ## The line
 
 > **Today's AI video redraws every frame. A tripod lets us redraw the world once, so reality and its AI twin share one frame, and you can walk across the line between them.**

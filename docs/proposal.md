@@ -1,63 +1,56 @@
-# Project Proposal (check-in 1)
+# Project Proposal (updated 27 November, for check-in 2)
 
 ## Abstract
 
-**Today's AI video redraws every frame. A tripod lets us redraw the world once, so reality and its AI twin share one frame, and you can walk across the line between them.**
+**Film from a tripod, paint AI worlds onto the scene, and watch real people walk from one into the next. Each world is drawn once, so it cannot flicker.**
 
-We film a place from a tripod and redraw the empty scene once as winter, night, the 1920s or a Van Gogh painting. A rule (a line, a distance, a ring on the ground) then decides, pixel by pixel, whether you see the camera's own image or its generated twin, so anyone who walks across steps into the other world. A web demo and a live-camera kiosk let people do the crossing themselves.
+We film a place from a tripod and redraw the empty scene once per "world": winter, night, the 1920s, a Van Gogh painting. You paint where each world shows, or use a line or a ring on the ground. The real people are cut out and put back, and each person takes the world under their feet, so anyone who walks across steps into another world. It runs in a browser, on recorded clips and on a live camera.
 
 ## How it is done today, and why it falls short
 
-Restyling one photo is routine: pix2pix [1], CycleGAN's summer-to-winter Yosemite [2], and diffusion guided by an image's edges and depth (ControlNet [3]). Video is harder, and today's approaches all regenerate the scene over time:
+Restyling one photo is routine: pix2pix [1], CycleGAN [2], ControlNet [3]. For video, we surveyed papers, products, repos and social posts on 27 November ([state of the art](state-of-the-art.md)). Most pieces of our idea exist:
 
-- **Per-frame editors** (Rerender-A-Video, TokenFlow, FRESCO [4–6]) diffuse every frame and hold the frames together by correspondence. They flicker wherever that fails, and run at roughly 0.1–1 fps on an A100.
-- **Video-to-video models** (Runway Aleph 2.0, Luma Ray3.2, Wan VACE [7–9], VISTA [10], FreeViS [11]) regenerate every pixel, people included. They cap clips at about 5–30 s.
-- **Real-time generative video** (StreamDiffusion, StreamDiffusionV2, Decart MirageLSD [12–14]) re-renders each webcam frame on high-end GPUs, from one RTX 4090 up to four H100s. Frame-by-frame generation "introduces flicker and drift" [13], and it changes the person's face too.
-- **Layered video editing** (Layered Neural Atlases, CoDeF, Omnimatte [15–17]) edits one shared canvas and maps it back to every frame. It needs per-video optimisation, from minutes to about ten hours.
-- **Meeting apps** come closest in spirit. Teams' "Decorate your background", Zoom and Meet [18] generate a background once and paste the live person on top. But that background replaces the room; it never shares the frame with it.
+- **Real people in an AI world is a known genre.** Creators have filmed it since Runway's 2023 "World jumping" tutorial [28]. Video-to-video models (Runway Aleph 2.0, Luma, Wan VACE [7–9], VISTA [10], FreeViS [11]) and background replacement that keeps the foreground (AnyPortal [29], PAI-Studio [30], Vera [31]) all regenerate every frame on a GPU, in clips of seconds, with people redrawn or relit.
+- **Painting regions with different styles exists.** For stills: Interactive Digital Photomontage [32] and MAST [33]. For tripod video before AI: Cliplets [34]. For AI video: Xia et al. [35], LociArt [36] and EditCtrl [37]. Their regions are fixed pixel areas, and people are restyled like everything else.
+- **Per-frame and live tools** (Rerender-A-Video, TokenFlow, FRESCO [4–6]; StreamDiffusion, StreamDiffusionV2, Decart [12–14]) flicker or drift, and change faces. Offline video models no longer flicker much by the usual metrics [31, 36], so we do not claim that against them.
+- **Layered video editing** (Layered Neural Atlases, CoDeF, Omnimatte [15–17]) edits one shared canvas, learned per video. The idea goes back to Wang and Adelson's layers [38].
+- **Restyle once, real people on top:** Teams' "Decorate your background" [18] and FXjutsu's "Toon World" [39] work in the same order as we do, with one theme for the whole background and nothing to cross.
 
 ## What is new, and why we think it works
 
-Three things: the world is generated once, the crossing between it and reality, and a world that grows in instead of cutting.
+A tripod turns the shared canvas into one image, the per-pixel median [19]. We redraw it once per world with Stable Diffusion 1.5, ControlNet (edges, and depth from Depth Anything V2 [40]) and LCM [41], in 80–149 s per world on four CPU cores. On top of that we add three things:
 
-**A tripod turns video editing into image editing.** With a fixed camera, the layered-editing canvas needs no learning: every frame maps to it by the identity, so the canvas *is* the clean plate. A per-pixel median over the clip recovers it in closed form [19]. We restyle that one image with Stable Diffusion 1.5, ControlNet (depth and edges) and LCM, in 80–149 s per world on four CPU cores. The world is a single image, so it cannot flicker, and it works at any clip length or resolution. Like VFX clean-plate compositing, people are cut out (pixels that differ from the plate) and put back. They are colour-matched to each world, and their shadows carry over as the frame-to-plate brightness ratio, a simple form of shadow compositing [20].
+1. **A mask per world.** You paint where each pre-drawn world shows; everywhere else is the camera's own pixels.
+2. **People cross as a whole.** A person is whatever differs from the empty scene. We read the mask under their feet [21] and show the whole person in that world, tinted to its light, with their shadow carried over [20].
+3. **One blend per pixel.** Each world is a single image, so every frame is one blend per pixel: it runs live in a browser, on a laptop, at any clip length.
 
-**What this exactness buys is the crossing.** A rule picks, for every pixel, the real frame or its generated twin:
-- a line;
-- depth, from Depth Anything V2 on the plate, with each person taking the depth of the ground at their feet [21], so they change as one piece while walking away;
-- a portal ring;
-- a horizon wave.
+Like the yellow first-down line in football broadcasts [42], the world is painted under the people, never on them. We looked for the crossing itself, people changing world as a whole by where they stand, and did not find it. Its nearest relatives are photographers who blend day and night across one fixed view by hand [22], and AR portals that open onto authored 3D rooms [23].
 
-People take on the world of wherever they stand. Photographers split one fixed view into day and night by hand (Stephen Wilkes's *Day to Night* takes months per still) [22], and AR portals open onto authored 3D rooms [23]. We did not find a tool, paper or artwork that splits a live or filmed frame between reality and a generated version of the same scene, with people walking through the seam.
-
-**The seam measures itself.** One side is untouched, so any geometry the generator moves shows up as a step at the line, measured in pixels. That is more direct than feature-similarity scores, which are unreliable under big colour changes like night [24].
-
-**The world grows instead of cutting.** img2img at lower strength [25] gives the model's own unfinished versions of a world. We play them in order, from the plate to the filter image the generation started from, to partial results, to the final world. Neighbouring versions are joined with a two-band blend run over time (Brown–Lowe [26]; the 2-level pyramid from the mosaics project): colour crossfades while fine detail switches pixel by pixel. That avoids the double-exposure look of a plain crossfade [27]. It is Project 5's "series of edits at increasing noise levels", played as a movie.
+Two more features exist in early form and come later: splitting by depth, and a morph in which a world grows in through the model's own lower-strength images [25–27].
 
 ## What we tried, and what it says
 
 - **Footage:** a public stand-in tripod clip (OpenCV's 768×576 plaza clip) plus two street clips.
 - **Generation:** we planned to compare FLUX.2, Qwen-Image-Edit and SDXL on a GPU. We shipped with SD 1.5 on a CPU, because a world is generated only once per video and seconds of latency do not matter. ControlNet held the geometry well enough that all 7 generated worlds needed no re-alignment.
-- **Alignment:** with a deliberately injected drift (a 3–4 px seam jump), homography plus a local warp brings the seam back to 0.13–0.53 px on 7 of 9 filtered styles. Two sparse styles fall back to 1.2–2.3 px.
+- **Alignment:** with a deliberately injected drift (a 3–4 px seam jump), homography plus a local warp brings the seam back to 0.13–0.53 px on 7 of 9 filtered styles. Two sparse styles fall back to 1.2–2.3 px. Measuring the jump at the seam in pixels is more direct than feature-similarity scores, which are unreliable under large colour changes [24].
 - **People:** composited back onto the unedited plate, they match the original footage at 35 dB PSNR.
-- **Depth:** person height tracks the depth at their feet with r = 0.80 over 4,154 detections. The depth rule, a stretch goal in our first proposal, now works.
-- **Demos built:**
-  - a web demo running the compositor in WebGL;
-  - a laptop kiosk that captures the empty room, generates a world in seconds, then composites the live camera at camera rate;
-  - a trailer and a 16-s one-take loop.
+- **Depth:** person height tracks the depth at their feet with r = 0.80 over 4,154 detections.
+- **Paint (new):** several worlds painted at once in the browser, with an eraser and undo. Outside the paint, the output equals the camera frame exactly, and a walker stepping onto paint is detected as a crossing.
+- **Survey (new):** it changed our claims. "An AI world behind real people" and "painted styles" are now credited as prior work, and we claim flicker only against per-frame and live tools.
+- **Demos built:** a web demo running the compositor in WebGL, and a laptop kiosk that captures the empty room, generates a world, then composites the live camera at camera rate.
 
 ## Next steps and how we will measure success
 
 1. Film Sather Gate and the Campanile with locked exposure.
-2. Run the minimal experiment we owe: per-frame Stable Diffusion on 2 s of the same clip. Measure its frame-to-frame flicker on static background pixels next to ours. We have argued, but not yet shown, that one image beats per-frame generation.
-3. Try a GPU editor on the real footage; the pipeline accepts any generated image.
+2. Run the experiment we owe: per-frame Stable Diffusion on a few seconds of the same clip, measured the way recent papers do (frame-to-frame similarity, warp error on static pixels, PSNR on people) next to ours.
+3. Export the result as a video, and record the 60–90 s demo.
 
 **Success means:**
-- seam drift under 2 px on our own footage;
-- the per-frame baseline visibly and measurably flickers where ours does not;
-- people who try the kiosk cross the line on purpose.
+- the per-frame baseline measurably flickers where ours does not;
+- outside the paint, our output equals the camera frame exactly (true in today's tests);
+- people who try it walk across on purpose.
 
-**The known limits:** a moving camera, swaying trees or water, and anyone who stands still for most of the clip (they get baked into the plate).
+**The known limits:** a moving camera, swaying trees or water, and anyone who stands still for most of the clip (they get baked into the empty scene). People are tinted, not relit.
 
 ## Data
 
@@ -92,3 +85,18 @@ Each 1–3 min fixed-camera clip separates into the still scene and the people m
 25. Meng et al., SDEdit, ICLR 2022. https://arxiv.org/abs/2108.01073
 26. Brown & Lowe, Recognising Panoramas, ICCV 2003. https://www.cs.ubc.ca/labs/lci/papers/docs2003/brown03.pdf
 27. Wang & Golland, Interpolating between Images with Diffusion Models, 2023. https://arxiv.org/abs/2307.12560
+28. Runway Academy, "World jumping" (Gen-1, 2023), after Martin Haerlin's post. https://academy.runwayml.com/gen1/gen1-world-jumping
+29. Gao, Lan, Yang, AnyPortal: Zero-Shot Consistent Video Background Replacement, ICCV 2025. https://arxiv.org/abs/2509.07472
+30. PAI-Studio: Cinematic Video Background Replacement with Camera-Aware Motion, arXiv 2606.01399 (2026). https://arxiv.org/abs/2606.01399
+31. Vera: A Layered Diffusion Model for Content-Preserving Video Editing, arXiv 2606.23610 (2026). https://arxiv.org/abs/2606.23610
+32. Agarwala et al., Interactive Digital Photomontage, SIGGRAPH 2004. https://grail.cs.washington.edu/projects/photomontage/
+33. MAST: Mask-Guided Attention Control for Training-Free Regional Multi-Style Transfer, arXiv 2604.12281 (2026). https://arxiv.org/abs/2604.12281
+34. Joshi et al., Cliplets: Juxtaposing Still and Dynamic Imagery, UIST 2012. https://hhoppe.com/proj/cliplets/
+35. Xia et al., Real-time Localized Photorealistic Video Style Transfer, arXiv 2010.10056 (2020). https://arxiv.org/abs/2010.10056
+36. LociArt: A Unified Paradigm for Free-Style Local Video Stylization, arXiv 2610.36456 (2026). https://arxiv.org/abs/2610.36456
+37. Litman et al., EditCtrl: Disentangled Local and Global Control for Real-Time Generative Video Editing, arXiv 2602.15031 (2026). https://arxiv.org/abs/2602.15031
+38. Wang and Adelson, Representing Moving Images with Layers, IEEE TIP 1994. https://persci.mit.edu/pub_abstracts/wang_tr279_abs.html
+39. FXjutsu, "Toon World" preset (2026). https://github.com/audriu/fxjutsu
+40. Yang et al., Depth Anything V2, NeurIPS 2024. https://arxiv.org/abs/2406.09414
+41. Luo et al., LCM-LoRA, 2023. https://arxiv.org/abs/2311.05556
+42. Sportvision, the "1st & Ten" virtual first-down line (1998). https://entertainment.howstuffworks.com/first-down-line.htm
