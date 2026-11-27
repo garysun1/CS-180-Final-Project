@@ -5,7 +5,7 @@ import { Compositor, IDENTITY_FIELD } from './compositor.js';
 import { PlateCapture, fitColourField, toImageData } from './plate.js';
 import { PortalAudio } from './audio.js';
 import { Painting } from './paint.js';
-import { exportVideo, probeFps, probeVideo, saveFile } from './export.js';
+import { canSave, exportVideo, probeFps, probeVideo, saveFile, saveReady } from './export.js';
 
 const params = new URLSearchParams(location.search);
 // floodHint: after the first crossing, say once that holding floods (the hosted page)
@@ -119,14 +119,16 @@ async function startClip(src, startTime = 0) {
 }
 // opts.src: clip URL; opts.plate: a ready empty scene (ImageBitmap) instead of capturing one;
 // opts.startTime: where the clip starts (seconds into the clip)
+let switching = 0;                                  // sources still starting (no Export meanwhile)
 async function useSource(name, opts = {}) {
+  switching++;
   try {
     S.video = name === 'camera' ? await startCamera() : await startClip(opts.src, opts.startTime);
     S.source = name;
   } catch (e) {
     if (name === 'camera') { toast('No camera available, using the recorded clip'); log(`camera: ${e}`); return useSource('clip'); }
     throw e;
-  }
+  } finally { switching--; }
   const w = S.video.videoWidth, h = S.video.videoHeight;
   if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
   work.width = w; work.height = h;
@@ -729,10 +731,11 @@ async function exportClip({ start = 0, end = null, save = true } = {}) {
   if (exportJob) { exportJob.abort(); return null; }
   if (save && S.unsaved) return saveExport(true);
   const v = S.video;
-  if (!comp || !v || S.source !== 'clip' || !S.plate || !isFinite(v.duration)) {
+  if (!comp || !v || S.source !== 'clip' || !S.plate || switching || !isFinite(v.duration)) {
     toast('Export works on the recorded scenes and your own video, once the empty scene is ready.', 4000);
     return null;
   }
+  if (save && !canSave()) { toast('Saving files is not available in this view.', 5000); return null; }
   const stop = Math.min(end == null ? v.duration : end, v.duration);
   const was = { t: v.currentTime, playing: !v.paused };
   exportJob = new AbortController();
@@ -742,8 +745,8 @@ async function exportClip({ start = 0, end = null, save = true } = {}) {
   renderControls();
   let res = null, err = null, fps = 30;
   try {
-    // recorded scenes: scenes.json; your own video: read from the file
-    fps = S.sceneFps || (S.videoFile && await probeFps(S.videoFile)) || 30;
+    // recorded scenes: scenes.json; your own video or the kiosk's clip: read from the file
+    fps = S.sceneFps || await probeFps(S.videoFile || await fetchBlob(v.currentSrc).catch(() => null)) || 30;
     const base = performance.now();
     res = await exportVideo({
       canvas, video: v, fps, start, end: stop, signal: exportJob.signal,
@@ -783,6 +786,7 @@ async function saveExport(again = false) {
 }
 function renderExportButton() {
   const b = $('b-export'); if (!b) return;
+  b.hidden = !canSave();                             // (a view that cannot save offers no Export)
   b.textContent = S.exporting ? `Exporting ${Math.round(100 * (S.exportProgress || 0))}% · stop` : S.unsaved ? 'Save video' : 'Export';
   b.setAttribute('aria-pressed', String(!!S.exporting));
 }
@@ -1431,6 +1435,7 @@ async function start() {
   renderControls();
 }
 bindControls();
+saveReady.then(renderExportButton);
 if ($('go')) $('go').addEventListener('click', start);
 if (CFG.autostart) start();
 

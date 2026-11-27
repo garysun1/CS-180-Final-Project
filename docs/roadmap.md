@@ -42,10 +42,10 @@ current worlds, masks and paint.
   WebCodecs: H.264 in MP4, or VP9 in WebM where H.264 is missing.
 - Effects that depend on time (the crossing burst, the pulse) follow the clip's clock while exporting,
   so they play at the same moments as in the file.
-- The frame rate comes from the clip: written into `scenes.json` by the build, or read from the
-  timestamps in your own file.
+- The frame rate comes from the clip: written into `scenes.json` by the build, or read from the file's
+  frame timestamps (your own video, the kiosk's recorded clip).
 - The hosted page saves the file through the viewer's download prompt (the `downloads` capability);
-  the kiosk uses a normal download link.
+  the kiosk uses a normal download link. A view that cannot save files shows no Export button.
 - Pressing Export again stops it; playback resumes where it was. While it runs, the scene and your own
   video cannot be changed, and floods do not start.
 - If the viewer turns the save down, the file is kept and the button reads **Save video**.
@@ -55,7 +55,8 @@ several times faster (not yet measured). A 10 fps plaza clip of 3 min is 1,800 f
 
 **Test:** `test.cjs` exports 2 s of the plaza and reads the file back: 20 frames at 10 fps, the canvas
 size, 2 s long, playback resumed. A second export refuses a scene change and is stopped part-way. A save
-turned down is offered again. Your own video exports at its file's frame rate.
+turned down is offered again. Your own video exports at its file's frame rate. The kiosk smoke test
+exports its recorded clip at the clip's 10 fps.
 
 **Next:** an in/out range (today it is the whole clip), and a progress bar with time left.
 

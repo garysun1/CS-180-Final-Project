@@ -72,6 +72,7 @@ export async function exportVideo({ canvas, video, fps, start, end, step, onProg
 
 // A video file's frame rate, read from its frame timestamps (null if the file cannot be read).
 export async function probeFps(blob) {
+  if (!blob) return null;
   try {
     const { Input, BlobSource, ALL_FORMATS } = await loadEncoder();
     const track = await new Input({ formats: ALL_FORMATS, source: new BlobSource(blob) }).getPrimaryVideoTrack();
@@ -89,6 +90,13 @@ export async function probeVideo(blob) {
   return { frames: stats.packetCount, seconds: await input.computeDuration(), width: track.displayWidth,
            height: track.displayHeight, codec: track.codec };
 }
+
+// Can this view save a file? A page of its own can (a link); a framed one (the artifact viewer) only through
+// the `downloads` capability, asked once at load. Until the answer comes, canSave() says no.
+let canSaveHere = window.self === window.top;
+export const saveReady = canSaveHere || !(window.claude && window.claude.use) ? Promise.resolve(canSaveHere)
+  : window.claude.use('downloads').then((d) => (canSaveHere = !!d), () => false);
+export const canSave = () => canSaveHere;
 
 // Hand the file to the viewer: the artifact page's `downloads` capability where it exists, else a link.
 // A framed page without the capability cannot download at all, so it says so instead of failing silently.

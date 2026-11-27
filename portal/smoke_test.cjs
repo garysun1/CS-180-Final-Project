@@ -3,6 +3,7 @@
 //   node portal/smoke_test.cjs http://localhost:8765/ path/to/clip.y4m out_dir [autostart]
 // "autostart" opens ?autostart=1 with the browser's normal autoplay policy and clicks nothing: the page
 // must start on its own, and its sound must wait for a user gesture instead of queueing up.
+// Last, it switches to the recorded clip (B) and exports a second of it: 10 frames at the clip's own 10 fps.
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
@@ -61,9 +62,14 @@ const path = require('path');
     await page.waitForTimeout(400); await snap('glitch');
     report.crossings = await page.evaluate(() => window.__portal.state.crossings);
     report.fpsEnd = await page.evaluate(() => window.__portal.state.fps);
+    // the recorded clip (B): once its empty scene is in, Export runs at the clip's own rate (10 fps)
+    await page.keyboard.press('b');
+    await page.waitForFunction(() => { const s = window.__portal.state; return s.source === 'clip' && s.plate; }, null, { timeout: 180000 });
+    report.clipExport = await page.evaluate(() => window.__portal.exportClip({ start: 0, end: 1 }));
     report.shots = shots;
     report.ok = errors.length === 0 && report.diffWorldSide > report.diffRealSide * 2 &&
-      (!autostart || report.audioBeforeGesture !== 'running');
+      (!autostart || report.audioBeforeGesture !== 'running') &&
+      !!report.clipExport && report.clipExport.fps === 10 && report.clipExport.frames === 10;
   } catch (e) {
     report.error = String(e);
   }
