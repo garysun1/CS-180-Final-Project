@@ -1,6 +1,6 @@
 // Test the hosted portal page in a CSP harness: no camera, recorded scenes, on-screen controls.
 //   python scripts/build_portal_artifact.py SITE --harness && (cd SITE && python -m http.server 8770) &
-//   node portal/artifact/test.cjs http://127.0.0.1:8770/harness.html some_fixed_camera_clip.mp4 OUT_DIR
+//   node portal/artifact/test.cjs http://127.0.0.1:8770/harness.html some_fixed_camera_clip.mp4 OUT_DIR [CLIP_FPS]
 // Checks: errors and CSP; the opening crossing; colour parity of every generated world against the
 // Python colour field; real side vs world side (video paused); Grow, the default seam (video paused: the
 // real side is the camera bit for bit, no step at the line, the world forms across the band, every
@@ -8,12 +8,14 @@
 // with the video paused, the mouse gesture, a held full flood with the clip playing, its sound, a phone
 // long press); a person-only burst (deterministic, video paused); Layers; Depth; the world-change wave
 // (held at half way); Paint (exact outside the paint, erasing, several worlds at once, undo, the controls,
-// a crossing onto it); Export (two seconds read back frame by frame, stopping one); the other scenes; your own
-// video; phone.
+// a crossing onto it); Export (two seconds read back frame by frame, the scene menu refused meanwhile,
+// stopping one, a declined save offered again); the other scenes; your own video (and its export's frame
+// rate); phone.
 const { chromium, devices } = require('playwright');
 const fs = require('fs');
 const path = require('path');
-const [url, upload, out] = process.argv.slice(2);
+const [url, upload, out, uploadFpsArg] = process.argv.slice(2);
+const uploadFps = +(uploadFpsArg || 10);   // the upload clip's frame rate (portal/clips/fallback.mp4: 10)
 fs.mkdirSync(out, { recursive: true });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const fails = [];
@@ -474,26 +476,47 @@ const meanAbs = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += M
     check(w.topMidVsNew < w.topMidVsOld && w.bottomMidVsOld < w.bottomMidVsNew && w.waveCleared, `wave ${JSON.stringify(w)}`);
 
     // Export: two seconds of the clip, every frame drawn once. The file reads back with that many frames at
-    // the canvas size, and playback carries on afterwards. Pressing Export while it runs stops it.
+    // the canvas size, and playback carries on afterwards. While one runs, the scene menu is refused, and
+    // pressing Export stops it. Saving through the hosted page's downloads capability (a stand-in here):
+    // turned down, the file stays and the button offers it again; accepted, it goes.
     report.export = await page.evaluate(async () => {
-      const p = window.__portal, s = p.state, view = document.getElementById('view');
+      const p = window.__portal, s = p.state, view = document.getElementById('view'), btn = document.getElementById('b-export');
       const res = await p.exportClip({ start: 20, end: 22 });
       const file = await p.probeExport();
       const after = { exporting: s.exporting, playing: !s.video.paused };
       const job = p.exportClip({ start: 0, end: 10 });
       await new Promise((r) => setTimeout(r, 1500));
-      const label = document.getElementById('b-export').textContent;
+      const label = btn.textContent;
+      const sel = document.getElementById('scene');
+      sel.value = '1'; sel.dispatchEvent(new Event('change'));
+      await new Promise((r) => setTimeout(r, 300));
+      const sceneKept = s.scene === 0 && sel.value === '0' && s.exporting;
       const stop = await p.exportClip();
       const stopped = await job;
-      return { res, file, after, label, stop, stopped, size: [view.width, view.height],
-               idle: !s.exporting && document.getElementById('b-export').textContent === 'Export' };
+      const idle = !s.exporting && btn.textContent === 'Export';
+      const saves = [];
+      window.claude = { use: async (name) => (name !== 'downloads' ? null : {
+        save: async ({ filename, data }) => {
+          saves.push({ filename, bytes: data.size, blob: data instanceof Blob });
+          if (saves.length === 1) throw { code: 'declined', message: 'no' };
+          return { status: 'saved' };
+        } }) };
+      await p.exportClip({ start: 5, end: 5.5, save: true });
+      const offered = btn.textContent;
+      btn.click();
+      await new Promise((r) => setTimeout(r, 300));
+      delete window.claude;
+      return { res, file, after, label, sceneKept, stop, stopped, size: [view.width, view.height], idle,
+               saves, offered, afterSave: btn.textContent };
     });
     {
       const e = report.export, want = Math.round(2 * e.res.fps);
       check(e.res.frames === want && e.file.frames === want && Math.abs(e.file.seconds - 2) < 0.15 &&
             e.file.width === e.size[0] && e.file.height === e.size[1] && !e.after.exporting && e.after.playing &&
-            /^Exporting \d+%/.test(e.label) && e.stop === null && e.stopped === null && e.idle,
+            /^Exporting \d+%/.test(e.label) && e.sceneKept && e.stop === null && e.stopped === null && e.idle,
             `export ${JSON.stringify(e)}`);
+      check(e.saves.length === 2 && e.saves.every((x) => x.blob && x.bytes > 0 && /^cross-the-line-plaza-.+\.mp4$/.test(x.filename)) &&
+            e.offered === 'Save video' && e.afterSave === 'Export', `export save ${JSON.stringify(e.saves)} ${e.offered} ${e.afterSave}`);
     }
 
     // the other scenes
@@ -514,6 +537,10 @@ const meanAbs = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += M
     report.upload = await page.evaluate(() => { const p = window.__portal, s = p.state;
       return { worlds: s.worlds.length, mask: p.maskStats(), far: !!s.far, sceneLabel: document.querySelector('#scene').selectedOptions[0].textContent }; });
     check(report.upload.mask && report.upload.mask.personFrac > 0, 'no people found in the uploaded video');
+    // its export runs at the file's own frame rate (read from its timestamps), one second of frames
+    report.uploadExport = await page.evaluate(() => window.__portal.exportClip({ start: 0, end: 1 }));
+    check(report.uploadExport && Math.abs(report.uploadExport.fps - uploadFps) < 0.05 &&
+          report.uploadExport.frames === Math.round(uploadFps), `upload export ${JSON.stringify(report.uploadExport)} (file: ${uploadFps} fps)`);
     await page.screenshot({ path: path.join(out, 'd7_upload.png') });
     await page.click('#b-sound'); await sleep(400);
     report.audio = await page.evaluate(() => ({ muted: window.__portal.state.muted, state: window.__portal.audioState() }));

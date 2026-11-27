@@ -12,10 +12,24 @@ export async function loadEncoder() {
   return mb;
 }
 
-// Show frame t (seconds) of a paused video: seek, then wait until that frame is ready to draw.
-async function seek(video, t) {
-  await new Promise((resolve) => { video.addEventListener('seeked', resolve, { once: true }); video.currentTime = t; });
-  if (!video.requestVideoFrameCallback) return;
+// Show frame t (seconds) of a paused video: seek, then wait until that frame is ready to draw. Fails if the
+// video is replaced or never finishes seeking, so the export cannot hang; an abort ends the wait at once.
+async function seek(video, t, signal) {
+  await new Promise((resolve, reject) => {
+    const done = (fail) => () => {
+      clearTimeout(timer);
+      video.removeEventListener('seeked', ok); video.removeEventListener('emptied', gone);
+      if (signal) signal.removeEventListener('abort', ok);
+      if (fail) reject(new Error(fail)); else resolve();
+    };
+    const ok = done(null), gone = done('the video was replaced');
+    const timer = setTimeout(done('the video stopped seeking'), 10000);
+    video.addEventListener('seeked', ok); video.addEventListener('emptied', gone);
+    if (signal) signal.addEventListener('abort', ok);
+    video.currentTime = t;
+  });
+  // a hidden page draws nothing, so the frame callback would never come: 'seeked' is enough there
+  if (!video.requestVideoFrameCallback || document.hidden) return;
   await new Promise((resolve) => {
     const id = video.requestVideoFrameCallback(() => { clearTimeout(timer); resolve(); });
     const timer = setTimeout(() => { video.cancelVideoFrameCallback(id); resolve(); }, 250);
@@ -39,16 +53,31 @@ export async function exportVideo({ canvas, video, fps, start, end, step, onProg
   output.addVideoTrack(source, { frameRate: fps });
   await output.start();
   const frames = Math.max(1, Math.round((end - start) * fps));
-  for (let i = 0; i < frames; i++) {
-    if (signal && signal.aborted) { await output.cancel(); return null; }
-    // the middle of the frame's interval, so rounding never lands on its neighbour
-    await seek(video, Math.min(start + (i + 0.5) / fps, video.duration - 0.001));
-    step(i, i / fps);
-    await source.add(i / fps, 1 / fps);
-    if (onProgress) onProgress((i + 1) / frames);
+  try {
+    for (let i = 0; i < frames; i++) {
+      // the middle of the frame's interval, so rounding never lands on its neighbour
+      await seek(video, Math.min(start + (i + 0.5) / fps, video.duration - 0.001), signal);
+      if (signal && signal.aborted) { await output.cancel(); return null; }
+      step(i, i / fps);
+      await source.add(i / fps, 1 / fps);
+      if (onProgress) onProgress((i + 1) / frames);
+    }
+    await output.finalize();
+  } catch (e) {
+    await output.cancel().catch(() => {});
+    throw e;
   }
-  await output.finalize();
   return { blob: new Blob([output.target.buffer], { type: `video/${ext}` }), ext, frames };
+}
+
+// A video file's frame rate, read from its frame timestamps (null if the file cannot be read).
+export async function probeFps(blob) {
+  try {
+    const { Input, BlobSource, ALL_FORMATS } = await loadEncoder();
+    const track = await new Input({ formats: ALL_FORMATS, source: new BlobSource(blob) }).getPrimaryVideoTrack();
+    const fps = track && (await track.computeFrameRateMetrics()).bestGuessFrameRate;
+    return fps > 0 && isFinite(fps) ? Math.min(60, fps) : null;
+  } catch { return null; }
 }
 
 // Frame count, duration and size of an exported file (tests).
@@ -62,9 +91,11 @@ export async function probeVideo(blob) {
 }
 
 // Hand the file to the viewer: the artifact page's `downloads` capability where it exists, else a link.
+// A framed page without the capability cannot download at all, so it says so instead of failing silently.
 export async function saveFile(blob, filename) {
   const downloads = window.claude && window.claude.use ? await window.claude.use('downloads') : null;
   if (downloads) return (await downloads.save({ filename, data: blob })).status;
+  if (window.self !== window.top) throw { code: 'unavailable', message: 'saving is not available in this view' };
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob); a.download = filename;
   document.body.append(a); a.click(); a.remove();

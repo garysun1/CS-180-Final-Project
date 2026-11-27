@@ -5,7 +5,7 @@ import { Compositor, IDENTITY_FIELD } from './compositor.js';
 import { PlateCapture, fitColourField, toImageData } from './plate.js';
 import { PortalAudio } from './audio.js';
 import { Painting } from './paint.js';
-import { exportVideo, probeVideo, saveFile } from './export.js';
+import { exportVideo, probeFps, probeVideo, saveFile } from './export.js';
 
 const params = new URLSearchParams(location.search);
 // floodHint: after the first crossing, say once that holding floods (the hosted page)
@@ -198,26 +198,13 @@ function scheduleSegmentation(reset = false) {
   if (segPending || !v) return;
   segPending = true;
   const g = segGen;
-  const run = (_, meta) => {
+  const run = () => {
     if (g !== segGen) return;
     segPending = false;
-    if (meta && !S.exporting) noteMediaTime(meta.mediaTime);
     if (!S.exporting) onVideoFrame();               // (Export analyses its own frames)
     scheduleSegmentation();
   };
   if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(run); else setTimeout(run, 33);
-}
-// The clip's frame rate: scenes.json says it for the recorded scenes; for your own video, the shortest step
-// between the frames the browser presents (30 until it has seen two in a row).
-let lastMediaTime = null;
-function noteMediaTime(t) {
-  const d = lastMediaTime == null ? 0 : t - lastMediaTime;
-  if (d > 1 / 121 && d < 0.5) S.minFrameDt = Math.min(S.minFrameDt || 1, d);
-  lastMediaTime = t;
-}
-function clipFps() {
-  if (S.sceneFps) return S.sceneFps;
-  return S.minFrameDt ? Math.min(60, Math.max(1, Math.round(1 / S.minFrameDt))) : 30;
 }
 function onVideoFrame() {
   const v = S.video;
@@ -441,7 +428,7 @@ function personRule(b, fl) {
 // Start holding a flood at (x, y), as of time `at`; snap: on the feet of the walker whose box holds the
 // point. A flood still on screen is picked up instead: it keeps its centre and grows on from where it is.
 function holdFlood(x, y, by, snap = true, at = clock()) {
-  if (S.mode === 3 || S.mode === 5 || S.layers || !S.plate || (S.flood && S.flood.held)) return false;
+  if (S.mode === 3 || S.mode === 5 || S.layers || S.exporting || !S.plate || (S.flood && S.flood.held)) return false;
   const cur = floodState(at);
   if (cur) Object.assign(S.flood, { held: true, by, t0: at, u0: cur.u, k0: cur.kLin, keep: false, hold: null, fresh: false });
   else {
@@ -736,35 +723,38 @@ function setEraser(on) { S.brush.erase = on; renderControls(); }
 // ------------------------------------------------------------------ export (export.js)
 // Saves what you see as a video: the clip from its start, every frame drawn once and the people analysed
 // frame by frame, as in playback. Playback pauses meanwhile and resumes where it was. Pressing Export
-// again stops it.
+// again stops it. If the viewer turns the save down, the file is kept and the button offers it again.
 let exportJob = null;
 async function exportClip({ start = 0, end = null, save = true } = {}) {
   if (exportJob) { exportJob.abort(); return null; }
+  if (save && S.unsaved) return saveExport(true);
   const v = S.video;
   if (!comp || !v || S.source !== 'clip' || !S.plate || !isFinite(v.duration)) {
     toast('Export works on the recorded scenes and your own video, once the empty scene is ready.', 4000);
     return null;
   }
-  const fps = clipFps(), stop = Math.min(end == null ? v.duration : end, v.duration);
+  const stop = Math.min(end == null ? v.duration : end, v.duration);
   const was = { t: v.currentTime, playing: !v.paused };
   exportJob = new AbortController();
   v.pause();
   S.exporting = true; S.exportProgress = 0;
   S.tracks = []; S.burst = null; S.mask = null; S.flood = null;
   renderControls();
-  const base = performance.now();
-  let res = null, err = null;
+  let res = null, err = null, fps = 30;
   try {
+    // recorded scenes: scenes.json; your own video: read from the file
+    fps = S.sceneFps || (S.videoFile && await probeFps(S.videoFile)) || 30;
+    const base = performance.now();
     res = await exportVideo({
       canvas, video: v, fps, start, end: stop, signal: exportJob.signal,
       step: (i, t) => { clockAt = base + t * 1000; onVideoFrame(); render(clockAt); },
-      onProgress: (f) => { S.exportProgress = f; renderControls(); },
+      onProgress: (f) => { S.exportProgress = f; renderExportButton(); },
     });
   } catch (e) { err = e; }
   // the clip's clock ran ahead of the wall clock: effects and tracks start afresh
   clockAt = null; S.exporting = false; exportJob = null;
   S.tracks = []; S.burst = null; S.lastCrossT = 0; S.lastBurstT = 0;
-  v.currentTime = was.t; lastMediaTime = null;   // (a jump, not a frame step)
+  v.currentTime = was.t;
   if (was.playing) v.play().catch(() => {});
   renderControls();
   if (err) { log(`export: ${err.message || err}`); toast(`Export failed: ${err.message || err}`, 8000); return null; }
@@ -773,11 +763,35 @@ async function exportClip({ start = 0, end = null, save = true } = {}) {
   const slug = (x) => String(x || 'clip').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
   const name = `cross-the-line-${slug(S.scenes[S.scene] ? S.scenes[S.scene].name : 'your-video')}-${slug(displayName(currentWorld()))}.${res.ext}`;
   toast(`Exported ${res.frames} frames (${(res.blob.size / 1e6).toFixed(1)} MB)`);
-  if (save) {
-    try { await saveFile(res.blob, name); }
-    catch (e) { toast(e && e.code === 'declined' ? 'Not saved' : `Could not save: ${(e && (e.message || e.code)) || e}`, 6000); }
-  }
+  if (save) { S.unsaved = { blob: res.blob, name }; await saveExport(); }
   return { ext: res.ext, frames: res.frames, bytes: res.blob.size, fps, name };
+}
+// Offer the exported file. Turned down the first time (or a prompt already open): it stays, and the button
+// reads "Save video". Turned down again: it goes, and the button exports afresh.
+async function saveExport(again = false) {
+  const u = S.unsaved;
+  try { await saveFile(u.blob, u.name); S.unsaved = null; }
+  catch (e) {
+    const code = e && e.code, keep = code === 'rate_limited' || (code === 'declined' && !again);
+    if (!keep) S.unsaved = null;
+    toast(code === 'rate_limited' ? 'A save prompt is already open.'
+      : code === 'declined' ? (keep ? 'Not saved. Press Save video to save it.' : 'Not saved')
+      : `Could not save: ${(e && (e.message || code)) || e}`, 6000);
+  }
+  renderExportButton();
+  return null;
+}
+function renderExportButton() {
+  const b = $('b-export'); if (!b) return;
+  b.textContent = S.exporting ? `Exporting ${Math.round(100 * (S.exportProgress || 0))}% · stop` : S.unsaved ? 'Save video' : 'Export';
+  b.setAttribute('aria-pressed', String(!!S.exporting));
+}
+// No other clip while exporting: Export steps through this one.
+function exportBusy() {
+  if (!S.exporting) return false;
+  toast('Exporting: press Export (V) to stop it first', 3000);
+  renderControls();                                  // (puts the scene menu back)
+  return true;
 }
 function setField(w, coeffs, gx = 1, gy = 1) {
   if (w.field) comp.gl.deleteTexture(w.field.tex);
@@ -822,7 +836,7 @@ async function fetchBlob(src) {
   return r.blob();
 }
 async function loadScene(i) {
-  const sc = S.scenes[i]; if (!sc) return;
+  const sc = S.scenes[i]; if (!sc || exportBusy()) return;
   const g = ++sceneGen;
   toast(`Loading ${sc.name}…`, 20000);
   try {
@@ -831,10 +845,10 @@ async function loadScene(i) {
       fetchBlob(sc.clip), bitmap(sc.plate),
       sc.far ? fetchBlob(sc.far).then((b) => decodeFar(b, sc.farGmax || 0.02)) : null,
       ...sc.worlds.map((w) => Promise.all([bitmap(w.src), ...(w.ladder || []).map((r) => bitmap(r.src))]))]);
-    if (g !== sceneGen) return;
+    if (g !== sceneGen || exportBusy()) return;    // (also an export started while this was loading)
     removeImageWorlds();
     S.scene = i;
-    S.sceneFps = sc.fps || null; S.minFrameDt = null; lastMediaTime = null;
+    S.sceneFps = sc.fps || null; S.videoFile = null; S.unsaved = null;
     resetPaint();
     S.layers = false; S.layer = -1;
     await useSource('clip', { src: URL.createObjectURL(clip), plate, startTime: sc.startTime || 0 });
@@ -857,11 +871,12 @@ async function loadScene(i) {
   renderControls();
 }
 async function useVideoFile(file) {
+  if (exportBusy()) return;
   sceneGen++;
   removeImageWorlds();
   S.scene = -1; S.plate = null; S.layers = false;
   movedSince = 0; movedWarned = false;
-  S.sceneFps = null; S.minFrameDt = null; lastMediaTime = null;
+  S.sceneFps = null; S.videoFile = file; S.unsaved = null;   // (Export reads its frame rate from the file)
   resetPaint();
   try {
     await useSource('clip', { src: URL.createObjectURL(file) });
@@ -1262,6 +1277,7 @@ function toggleFullscreen() {
 function toggleHelp(show) { const h = $('help'); if (h) h.hidden = show === undefined ? !h.hidden : !show; }
 function switchSource() {
   if (!CFG.camera) { toast('The live camera runs in the local kiosk (see README)'); return; }
+  if (exportBusy()) return;
   sceneGen++; S.scene = -1;
   useSource(S.source === 'camera' ? 'clip' : 'camera').then(renderControls);
 }
@@ -1341,10 +1357,7 @@ function renderControls() {
   if ($('b-sound')) { $('b-sound').setAttribute('aria-pressed', String(!S.muted)); $('b-sound').textContent = S.muted ? 'Sound off' : 'Sound on'; }
   if ($('b-seam')) $('b-seam').setAttribute('aria-pressed', String(S.seam === 'grow'));
   if ($('paint-tools')) $('paint-tools').hidden = S.mode !== 5;
-  if ($('b-export')) {
-    $('b-export').textContent = S.exporting ? `Exporting ${Math.round(100 * (S.exportProgress || 0))}% · stop` : 'Export';
-    $('b-export').setAttribute('aria-pressed', String(!!S.exporting));
-  }
+  renderExportButton();
   if ($('b-erase')) $('b-erase').setAttribute('aria-pressed', String(S.brush.erase));
   const box = $('worlds');
   if (box) {
@@ -1533,7 +1546,6 @@ window.__portal = {
   // Export frames [start, end) seconds without saving; probeExport reads the file back (frames, duration, size)
   exportClip: (opts = {}) => exportClip({ save: false, ...opts }),
   probeExport: () => (S.lastExport ? probeVideo(S.lastExport.blob) : null),
-  clipFps,
   // the seam: 'grow' or 'cut'; the line's morph band in px (at 768 wide)
   setSeam: (s) => setSeam(s, true),
   setBand: (px) => { S.band = px; },

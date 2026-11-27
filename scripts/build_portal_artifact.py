@@ -13,7 +13,8 @@ of the filter-to-world distance. scenes.json lists them as worlds[i].ladder = [{
 Needs the clips (scripts/fetch_sample.sh, scripts/fetch_clips.sh), their clean plates, depth maps and
 generated worlds in out/clips/<clip>/ (crossover.prepare, crossover.generate), and ffmpeg. --harness also writes harness.html (the
 page wrapped like a published artifact, with a similar content security policy) and, for the colour
-parity test, media/*_lacref.png. Neither is published: publish.json lists the files to publish.
+parity test, media/*_lacref.png. Neither is published: publish.json lists the files to publish. Publish
+the page with the capability {"downloads": true}: Export saves its video through it.
 """
 from __future__ import annotations
 
