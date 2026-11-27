@@ -8,7 +8,8 @@
 // with the video paused, the mouse gesture, a held full flood with the clip playing, its sound, a phone
 // long press); a person-only burst (deterministic, video paused); Layers; Depth; the world-change wave
 // (held at half way); Paint (exact outside the paint, erasing, several worlds at once, undo, the controls,
-// a crossing onto it); the other scenes; your own video; phone.
+// a crossing onto it); Export (two seconds read back frame by frame, stopping one); the other scenes; your own
+// video; phone.
 const { chromium, devices } = require('playwright');
 const fs = require('fs');
 const path = require('path');
@@ -471,6 +472,29 @@ const meanAbs = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += M
     });
     const w = report.wave;
     check(w.topMidVsNew < w.topMidVsOld && w.bottomMidVsOld < w.bottomMidVsNew && w.waveCleared, `wave ${JSON.stringify(w)}`);
+
+    // Export: two seconds of the clip, every frame drawn once. The file reads back with that many frames at
+    // the canvas size, and playback carries on afterwards. Pressing Export while it runs stops it.
+    report.export = await page.evaluate(async () => {
+      const p = window.__portal, s = p.state, view = document.getElementById('view');
+      const res = await p.exportClip({ start: 20, end: 22 });
+      const file = await p.probeExport();
+      const after = { exporting: s.exporting, playing: !s.video.paused };
+      const job = p.exportClip({ start: 0, end: 10 });
+      await new Promise((r) => setTimeout(r, 1500));
+      const label = document.getElementById('b-export').textContent;
+      const stop = await p.exportClip();
+      const stopped = await job;
+      return { res, file, after, label, stop, stopped, size: [view.width, view.height],
+               idle: !s.exporting && document.getElementById('b-export').textContent === 'Export' };
+    });
+    {
+      const e = report.export, want = Math.round(2 * e.res.fps);
+      check(e.res.frames === want && e.file.frames === want && Math.abs(e.file.seconds - 2) < 0.15 &&
+            e.file.width === e.size[0] && e.file.height === e.size[1] && !e.after.exporting && e.after.playing &&
+            /^Exporting \d+%/.test(e.label) && e.stop === null && e.stopped === null && e.idle,
+            `export ${JSON.stringify(e)}`);
+    }
 
     // the other scenes
     for (const [i, name] of [[1, 'crowd'], [2, 'street']]) {

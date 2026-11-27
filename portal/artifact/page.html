@@ -151,6 +151,7 @@
     <button type="button" id="b-sound" aria-pressed="false">Sound off</button>
     <button type="button" id="b-seam" aria-pressed="true" title="Morph: the world grows out of the filmed scene (E)">Morph</button>
     <span class="spacer"></span>
+    <button type="button" id="b-export" aria-pressed="false" title="Save what you see as a video, frame by frame (V)">Export</button>
     <button type="button" id="b-upload">Your video</button>
     <input type="file" id="file" accept="video/*,image/*" hidden>
     <button type="button" id="b-full">Full screen</button>
@@ -192,6 +193,8 @@
       <dt><kbd>G</kbd> <kbd>X</kbd></dt><dd>glitch the whole frame; turn off the glitch that hits whoever crosses</dd>
       <dt><kbd>[</kbd> <kbd>]</kbd> <kbd>←</kbd> <kbd>→</kbd></dt><dd>tilt or move the line</dd>
       <dt><kbd>S</kbd> <kbd>F</kbd> <kbd>D</kbd></dt><dd>sound, full screen, debug view (mask and timings)</dd>
+      <dt>Export <kbd>V</kbd></dt><dd>save what you see as a video: the clip from its start, every frame drawn once.
+        Press again to stop.</dd>
       <dt>Your video</dt><dd>use a clip from a fixed camera. The empty scene is the per-pixel median of its first frames, so
         people should keep moving. Drop an image of the same view to add it as a world.</dd>
     </dl>

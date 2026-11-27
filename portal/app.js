@@ -5,6 +5,7 @@ import { Compositor, IDENTITY_FIELD } from './compositor.js';
 import { PlateCapture, fitColourField, toImageData } from './plate.js';
 import { PortalAudio } from './audio.js';
 import { Painting } from './paint.js';
+import { exportVideo, probeVideo, saveFile } from './export.js';
 
 const params = new URLSearchParams(location.search);
 // floodHint: after the first crossing, say once that holding floods (the hosted page)
@@ -39,6 +40,11 @@ const PORTAL_SQUASH = 0.38;              // the portal ring lies on the ground
 // FLOOD_DRAIN when let go, and stays (until the next tap) if it was held full for FLOOD_KEEP. Times in ms.
 const HOLD_MS = 280, SLOP_PX = 8, FLOOD_GROW = 1400, FLOOD_TAKE = 300, FLOOD_DRAIN = 600, FLOOD_KEEP = 500;
 
+// The page's clock, in ms: the wall clock, except while Export steps through a clip, when it follows the
+// clip (so bursts, the ring's pulse and people's tracks keep their timing however slowly frames are drawn).
+let clockAt = null;
+const clock = () => (clockAt == null ? performance.now() : clockAt);
+
 const S = {
   worlds: SHADER_WORLDS.map((w) => ({ ...w })), world: 0, mode: Math.max(0, MODES.indexOf(params.get('mode') || 'line')),
   mirror: params.get('mirror') !== '0', debug: params.get('debug') === '1', diff: true,
@@ -50,7 +56,7 @@ const S = {
   seam: params.get('seam') === 'cut' ? 'cut' : 'grow', band: 120, prevW: null, slots: [null, null],
   source: params.get('source') === 'clip' || !CFG.camera ? 'clip' : 'camera', video: null,
   plate: null, plateData: null, capture: null, gain: 1,
-  mask: null, segMs: 0, delegate: '', fps: 0, frames: 0, lastFpsT: performance.now(),
+  mask: null, segMs: 0, delegate: '', fps: 0, frames: 0, lastFpsT: clock(),
   tracks: [], trackId: 0, burst: null, across: 0, crossings: 0, bursts: 0, burstLog: [],
   server: false, job: null, loaded: new Set(), log: [],
   scenes: [], scene: -1, layers: false, layer: -1, wave: null, waveHold: null, dragged: false,
@@ -192,8 +198,26 @@ function scheduleSegmentation(reset = false) {
   if (segPending || !v) return;
   segPending = true;
   const g = segGen;
-  const run = () => { if (g !== segGen) return; segPending = false; onVideoFrame(); scheduleSegmentation(); };
+  const run = (_, meta) => {
+    if (g !== segGen) return;
+    segPending = false;
+    if (meta && !S.exporting) noteMediaTime(meta.mediaTime);
+    if (!S.exporting) onVideoFrame();               // (Export analyses its own frames)
+    scheduleSegmentation();
+  };
   if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(run); else setTimeout(run, 33);
+}
+// The clip's frame rate: scenes.json says it for the recorded scenes; for your own video, the shortest step
+// between the frames the browser presents (30 until it has seen two in a row).
+let lastMediaTime = null;
+function noteMediaTime(t) {
+  const d = lastMediaTime == null ? 0 : t - lastMediaTime;
+  if (d > 1 / 121 && d < 0.5) S.minFrameDt = Math.min(S.minFrameDt || 1, d);
+  lastMediaTime = t;
+}
+function clipFps() {
+  if (S.sceneFps) return S.sceneFps;
+  return S.minFrameDt ? Math.min(60, Math.max(1, Math.round(1 / S.minFrameDt))) : 30;
 }
 function onVideoFrame() {
   const v = S.video;
@@ -290,8 +314,8 @@ function checkCameraMoved() {                    // a handheld 'your video' make
   if (S.scene !== -1 || S.source !== 'clip' || !S.plate || movedWarned || S.frames % 10) return;
   const st = window.__portal.maskStats();
   if (st && st.personFrac > 0.5) {
-    if (!movedSince) movedSince = performance.now();
-    else if (performance.now() - movedSince > 3000) {
+    if (!movedSince) movedSince = clock();
+    else if (clock() - movedSince > 3000) {
       movedWarned = true;
       toast('Looks like the camera moved. This needs a fixed camera: a tripod or a propped phone.', 6000);
     }
@@ -363,7 +387,7 @@ function ruleU(x, y) {
   if (S.mode === 5) return painting.top(x, y).v;
   return 1;
 }
-function breath() { return REDUCED ? 1 : 1 + 0.05 * Math.sin(performance.now() / 1000 * 2 * Math.PI / 3); }
+function breath() { return REDUCED ? 1 : 1 + 0.05 * Math.sin(clock() / 1000 * 2 * Math.PI / 3); }
 
 // ------------------------------------------------------------------ hold to flood
 // A press held still opens a flood: a ring of its own from where you press (from a walker's feet, if you
@@ -416,7 +440,7 @@ function personRule(b, fl) {
 }
 // Start holding a flood at (x, y), as of time `at`; snap: on the feet of the walker whose box holds the
 // point. A flood still on screen is picked up instead: it keeps its centre and grows on from where it is.
-function holdFlood(x, y, by, snap = true, at = performance.now()) {
+function holdFlood(x, y, by, snap = true, at = clock()) {
   if (S.mode === 3 || S.mode === 5 || S.layers || !S.plate || (S.flood && S.flood.held)) return false;
   const cur = floodState(at);
   if (cur) Object.assign(S.flood, { held: true, by, t0: at, u0: cur.u, k0: cur.kLin, keep: false, hold: null, fresh: false });
@@ -437,7 +461,7 @@ function steerFlood(x, y) {
 }
 // Let go at time `at`: it drains back, unless keepIfFull and it was held full for FLOOD_KEEP (then it
 // stays, until a tap).
-function releaseFlood(keepIfFull, at = performance.now()) {
+function releaseFlood(keepIfFull, at = clock()) {
   const f = S.flood;
   if (!f) return;
   at = Math.max(at, f.t0 || 0);
@@ -447,7 +471,7 @@ function releaseFlood(keepIfFull, at = performance.now()) {
   if (keepIfFull && (full || f.keep)) { Object.assign(f, { held: false, keep: true }); return; }
   Object.assign(f, { held: false, keep: false, hold: null, tr: at, ur: cur.u, kr: cur.kLin });
   setTimeout(() => { if (S.flood === f && !f.held && !f.keep && f.hold == null) S.flood = null; },
-             Math.max(0, at + FLOOD_DRAIN + 20 - performance.now()));
+             Math.max(0, at + FLOOD_DRAIN + 20 - clock()));
 }
 
 // People as blobs on a coarse grid, tracked across frames. Each gets one weight from where they stand
@@ -486,7 +510,7 @@ function analysePeople() {
                  box: [minx / GW, miny / GH, (maxx + 1) / GW, (maxy + 1) / GH], hw: (maxy - miny + 1) / (maxx - minx + 1) });
   }
   // track (nearest centroid; tracks keep their id), smooth each person's weight, detect crossings
-  const prev = S.tracks, next = [], now = performance.now(), fl = floodState(now);
+  const prev = S.tracks, next = [], now = clock(), fl = floodState(now);
   for (const t of prev) t.used = false;
   let massIn = 0, mass = 0;
   for (const b of blobs) {
@@ -543,7 +567,7 @@ function uploadPW(blobs, value) {
   comp.uploadRG8(comp.tex.pw, pwU8, GW, GH);
 }
 function onCrossing(t) {
-  const now = performance.now();
+  const now = clock();
   if (now - (S.lastCrossT || 0) >= 600) {
     S.lastCrossT = now; S.crossings++;
     const a = aud(); if (a && !S.muted) a.whoosh();
@@ -560,7 +584,7 @@ const padBox = (b) => [Math.max(0, b[0] - 0.04), Math.max(0, b[1] - 0.04), Math.
 // and lands in the world. A figure covering more than 10% of the frame switches
 // at most 3 times a second (flash safety).
 function startBurst(t, ms, seed, fixed = false) {
-  const now = performance.now();
+  const now = clock();
   t.lastBurst = now; S.lastBurstT = now; S.bursts++;
   S.burstLog.push(now); if (S.burstLog.length > 32) S.burstLog.shift();     // (tests: the spacing of bursts)
   const box = padBox(t.box);
@@ -619,7 +643,7 @@ function setWorld(i, quiet = false) {
   syncRungs();
   if (!quiet && !REDUCED && comp && S.plate && old && old !== currentWorld() && S.mode !== 5) {   // roll in from the horizon
     endWave();
-    S.wave = { t0: performance.now(), prevKind: old.kind, prevTex: old.tex, prevW: old, prevPattern: old.pattern,
+    S.wave = { t0: clock(), prevKind: old.kind, prevTex: old.tex, prevW: old, prevPattern: old.pattern,
                field: waveField(currentWorld(), old) };
   } else if (!quiet) flash(0.25);
   const a = aud(); if (a) a.setWorld(i);
@@ -660,7 +684,7 @@ function ladderOf(w) {                   // {n steps above the plate, slot}; n 0
 // the seam or the paint changes, recompute them from where people stand now (render does it once per
 // frame), or a paused frame keeps the old ones until the next analysed frame. A flood re-uploads its own.
 function refreshPW() {
-  if (!comp || !FEET.has(S.mode) || floodState(performance.now())) return;
+  if (!comp || !FEET.has(S.mode) || floodState(clock())) return;
   if (S.mode === 5) {                              // Paint: fresh values on the blobs; render uploads them per world
     for (const b of lastBlobs) { const r = personRule(b, null); b.w = r.w; b.u = r.u; if (r.world >= 0) b.world = r.world; }
     return;
@@ -708,6 +732,53 @@ function undoPaint() {
 }
 function resetPaint() { painting.reset(); if (comp) dropPaintTex(); S.pwStale = true; }   // a new scene
 function setEraser(on) { S.brush.erase = on; renderControls(); }
+
+// ------------------------------------------------------------------ export (export.js)
+// Saves what you see as a video: the clip from its start, every frame drawn once and the people analysed
+// frame by frame, as in playback. Playback pauses meanwhile and resumes where it was. Pressing Export
+// again stops it.
+let exportJob = null;
+async function exportClip({ start = 0, end = null, save = true } = {}) {
+  if (exportJob) { exportJob.abort(); return null; }
+  const v = S.video;
+  if (!comp || !v || S.source !== 'clip' || !S.plate || !isFinite(v.duration)) {
+    toast('Export works on the recorded scenes and your own video, once the empty scene is ready.', 4000);
+    return null;
+  }
+  const fps = clipFps(), stop = Math.min(end == null ? v.duration : end, v.duration);
+  const was = { t: v.currentTime, playing: !v.paused };
+  exportJob = new AbortController();
+  v.pause();
+  S.exporting = true; S.exportProgress = 0;
+  S.tracks = []; S.burst = null; S.mask = null; S.flood = null;
+  renderControls();
+  const base = performance.now();
+  let res = null, err = null;
+  try {
+    res = await exportVideo({
+      canvas, video: v, fps, start, end: stop, signal: exportJob.signal,
+      step: (i, t) => { clockAt = base + t * 1000; onVideoFrame(); render(clockAt); },
+      onProgress: (f) => { S.exportProgress = f; renderControls(); },
+    });
+  } catch (e) { err = e; }
+  // the clip's clock ran ahead of the wall clock: effects and tracks start afresh
+  clockAt = null; S.exporting = false; exportJob = null;
+  S.tracks = []; S.burst = null; S.lastCrossT = 0; S.lastBurstT = 0;
+  v.currentTime = was.t; lastMediaTime = null;   // (a jump, not a frame step)
+  if (was.playing) v.play().catch(() => {});
+  renderControls();
+  if (err) { log(`export: ${err.message || err}`); toast(`Export failed: ${err.message || err}`, 8000); return null; }
+  if (!res) { toast('Export stopped'); return null; }
+  S.lastExport = res;
+  const slug = (x) => String(x || 'clip').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const name = `cross-the-line-${slug(S.scenes[S.scene] ? S.scenes[S.scene].name : 'your-video')}-${slug(displayName(currentWorld()))}.${res.ext}`;
+  toast(`Exported ${res.frames} frames (${(res.blob.size / 1e6).toFixed(1)} MB)`);
+  if (save) {
+    try { await saveFile(res.blob, name); }
+    catch (e) { toast(e && e.code === 'declined' ? 'Not saved' : `Could not save: ${(e && (e.message || e.code)) || e}`, 6000); }
+  }
+  return { ext: res.ext, frames: res.frames, bytes: res.blob.size, fps, name };
+}
 function setField(w, coeffs, gx = 1, gy = 1) {
   if (w.field) comp.gl.deleteTexture(w.field.tex);
   w.field = comp.newField(gx, gy, coeffs);
@@ -763,6 +834,7 @@ async function loadScene(i) {
     if (g !== sceneGen) return;
     removeImageWorlds();
     S.scene = i;
+    S.sceneFps = sc.fps || null; S.minFrameDt = null; lastMediaTime = null;
     resetPaint();
     S.layers = false; S.layer = -1;
     await useSource('clip', { src: URL.createObjectURL(clip), plate, startTime: sc.startTime || 0 });
@@ -789,6 +861,7 @@ async function useVideoFile(file) {
   removeImageWorlds();
   S.scene = -1; S.plate = null; S.layers = false;
   movedSince = 0; movedWarned = false;
+  S.sceneFps = null; S.minFrameDt = null; lastMediaTime = null;
   resetPaint();
   try {
     await useSource('clip', { src: URL.createObjectURL(file) });
@@ -852,7 +925,7 @@ function tileRects() {
 const narrowStage = () => $('stage').getBoundingClientRect().width < 520;
 function frame(now) {
   requestAnimationFrame(frame);
-  render(now);
+  if (!S.exporting) render(now);                    // (Export draws its own frames)
 }
 // Draw one frame. `over` lets tests force a view synchronously (then read the pixels in the same task).
 function render(now, over = {}) {
@@ -1079,7 +1152,7 @@ canvas.addEventListener('pointerdown', (e) => {
   }
   try { canvas.setPointerCapture(e.pointerId); } catch { /* not an active pointer (a synthetic event) */ }
   const [x, y] = toFrame(e);
-  press = { id: e.pointerId, sx: e.clientX, sy: e.clientY, x, y, t: performance.now(), f: S.frames, kind: 'tap' };
+  press = { id: e.pointerId, sx: e.clientX, sy: e.clientY, x, y, t: clock(), f: S.frames, kind: 'tap' };
   if (S.mode === 5) {                            // Paint: every press is a stroke (no tap, drag or flood)
     // the right button, Alt, a pen's eraser end or the Eraser toggle paint reality back
     Object.assign(press, { kind: 'paint', erase: S.brush.erase || e.button === 2 || e.button === 5 || e.altKey });
@@ -1167,8 +1240,8 @@ function setBrush(r) {                           // 6 .. 200 px at 768 wide
   toast(`Brush ${Math.round(S.brush.r)} px`, 1000);
 }
 
-function glitchBurst() { S.glitchUntil = performance.now() + (REDUCED ? 500 : 1500); }
-function toggleCycle() { S.autoCycle = !S.autoCycle; S.lastCycle = performance.now(); toast(`Auto-cycle ${S.autoCycle ? 'on' : 'off'}`); renderControls(); }
+function glitchBurst() { S.glitchUntil = clock() + (REDUCED ? 500 : 1500); }
+function toggleCycle() { S.autoCycle = !S.autoCycle; S.lastCycle = clock(); toast(`Auto-cycle ${S.autoCycle ? 'on' : 'off'}`); renderControls(); }
 function toggleSound() {
   S.muted = !S.muted;
   if (audio || !S.muted) ensureAudio();
@@ -1218,6 +1291,7 @@ addEventListener('keydown', (e) => {
   else if (k === 'escape' && S.layers) { if (S.layer >= 0 && !narrowStage()) S.layer = -1; else toggleLayers(false); }
   else if (k === 'h') toggleHelp();
   else if (k === 'p') setMode(5);
+  else if (k === 'v') exportClip();
   else if (S.mode === 5 && e.key === '[') setBrush(S.brush.r / 1.2);
   else if (S.mode === 5 && e.key === ']') setBrush(S.brush.r * 1.2);
   else if (S.mode === 5 && (e.key === 'Backspace' || e.key === 'Delete')) clearPaint();
@@ -1228,7 +1302,7 @@ addEventListener('keydown', (e) => {
 });
 // O: hold to flood from the centre of the frame (the kiosk's press and hold); O again lets one that stays go
 let keyHeld = false;
-function keyFlood(down, at = performance.now()) {
+function keyFlood(down, at = clock()) {
   if (down) {
     if (S.flood && S.flood.keep) { releaseFlood(false, at); keyHeld = false; }
     else keyHeld = holdFlood(0.5, 0.5, 'key', false, at);
@@ -1267,6 +1341,10 @@ function renderControls() {
   if ($('b-sound')) { $('b-sound').setAttribute('aria-pressed', String(!S.muted)); $('b-sound').textContent = S.muted ? 'Sound off' : 'Sound on'; }
   if ($('b-seam')) $('b-seam').setAttribute('aria-pressed', String(S.seam === 'grow'));
   if ($('paint-tools')) $('paint-tools').hidden = S.mode !== 5;
+  if ($('b-export')) {
+    $('b-export').textContent = S.exporting ? `Exporting ${Math.round(100 * (S.exportProgress || 0))}% · stop` : 'Export';
+    $('b-export').setAttribute('aria-pressed', String(!!S.exporting));
+  }
   if ($('b-erase')) $('b-erase').setAttribute('aria-pressed', String(S.brush.erase));
   const box = $('worlds');
   if (box) {
@@ -1296,6 +1374,7 @@ function bindControls() {
   const on = (id, fn) => { if ($(id)) $(id).addEventListener('click', fn); };
   on('b-glitch', glitchBurst); on('b-cycle', toggleCycle); on('b-sound', toggleSound); on('b-layers', () => toggleLayers());
   on('b-seam', toggleSeam);
+  on('b-export', () => exportClip());
   on('b-erase', () => setEraser(!S.brush.erase)); on('b-clear', () => clearPaint()); on('b-undo', undoPaint);
   on('b-full', toggleFullscreen); on('b-help', () => toggleHelp()); on('help-close', () => toggleHelp(false));
   on('b-upload', () => {
@@ -1377,7 +1456,7 @@ async function loadRef(url) {
 window.__portal = {
   get state() { return S; },
   setWorld, setMode: (m) => setMode(m, true), setMirror: (b) => { S.mirror = b; },
-  glitch: (ms) => { S.glitchUntil = performance.now() + ms; }, capture: () => capturePlate(0),
+  glitch: (ms) => { S.glitchUntil = clock() + ms; }, capture: () => capturePlate(0),
   setLine: (x, angle = 0) => { S.line.x = x; S.line.angle = angle; },
   setDebug: (b) => { S.debug = b; }, loadScene, visualOrder, displayName: (i) => displayName(S.worlds[i]),
   tiles: () => tileRects(), narrow: () => narrowStage(),
@@ -1397,7 +1476,7 @@ window.__portal = {
   },
   // render synchronously and return mean |a - b| style digests of regions, for deterministic checks
   regions(box) {
-    render(performance.now());
+    render(clock());
     const { px, w, h, at } = readFrame();
     const inside = [], outside = [];
     for (let y = 0; y < h; y += 2) for (let x = 0; x < w; x += 2) {
@@ -1409,7 +1488,7 @@ window.__portal = {
   },
   // mean colour of the top and bottom bands of the result (rows as fractions of the height)
   bands(top = 0.1, bottom = 0.9) {
-    render(performance.now());
+    render(clock());
     const { px, w, h, at } = readFrame();
     const mean = (y0, y1) => { let s = 0, n = 0; for (let y = Math.floor(y0 * h); y < Math.floor(y1 * h); y += 2) for (let x = 0; x < w; x += 2) { const i = at(x, y); s += px[i] + px[i + 1] + px[i + 2]; n += 3; } return s / n; };
     const rows = (y0, y1) => { const out = []; for (let y = Math.floor(y0 * h); y < Math.floor(y1 * h); y += 4) for (let x = 0; x < w; x += 4) { const i = at(x, y); out.push(px[i], px[i + 1], px[i + 2]); } return out; };
@@ -1418,7 +1497,7 @@ window.__portal = {
   // colour parity: mean |page - reference| (0-255) of the person colour of the empty scene in this world
   async parity(refUrl) {
     const ref = await loadRef(refUrl);
-    render(performance.now(), { view: 6 });
+    render(clock(), { view: 6 });
     return diffImage(ref);
   },
   // mean |output - camera| (0-255) over a column band [x0, x1) of the frame (of the last frame drawn)
@@ -1437,7 +1516,7 @@ window.__portal = {
     S.flood = { x, y, hold: u, held: false, by: 'test' };
   },
   // draw a frame now (then compare() reads it)
-  renderNow() { return render(performance.now()); },
+  renderNow() { return render(clock()); },
   // Paint: a stroke through points [[x, y], ...] (frame fractions) with brush radius r (px at 768 wide);
   // clear; the painted value at a point
   paint(points, { r = 36, erase = false, world = S.world } = {}) {
@@ -1451,6 +1530,10 @@ window.__portal = {
   paintAt: (x, y) => painting.top(x, y).v,                 // how much paint, of any world
   paintWorldAt: (x, y) => painting.top(x, y).world,        // which world (-1: none)
   paintedWorlds: () => painting.worlds(),
+  // Export frames [start, end) seconds without saving; probeExport reads the file back (frames, duration, size)
+  exportClip: (opts = {}) => exportClip({ save: false, ...opts }),
+  probeExport: () => (S.lastExport ? probeVideo(S.lastExport.blob) : null),
+  clipFps,
   // the seam: 'grow' or 'cut'; the line's morph band in px (at 768 wide)
   setSeam: (s) => setSeam(s, true),
   setBand: (px) => { S.band = px; },
@@ -1458,7 +1541,7 @@ window.__portal = {
   // reference image, mean |page - reference| (0-255), else N
   async rungView(k, refUrl) {
     const ref = refUrl ? await loadRef(refUrl) : null;
-    render(performance.now(), { rung: k });
+    render(clock(), { rung: k });
     return ref ? diffImage(ref) : ladderOf(currentWorld()).n;
   },
   maskStats() {

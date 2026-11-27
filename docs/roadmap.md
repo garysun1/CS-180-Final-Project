@@ -1,7 +1,8 @@
 # Roadmap: the rest of the product
 
 The finished product is the interface plus a video of someone using it (see the README). Five pieces
-are missing. They are listed in build order; each is small and lives mostly in `portal/`.
+make it up, listed in build order; each is small and lives mostly in `portal/`. The first two, Paint and
+Export, are built.
 
 ## 1. Paint brush: any region, any world (the main selling point)
 
@@ -21,7 +22,7 @@ shows; the eraser paints reality back; **Clear** resets.
   Undo (Ctrl+Z, or the Undo button) re-paints every stroke but the last.
 - **Next:**
   - a softness setting, which would also set the width of the Morph band;
-  - saving the painting with the scene, for the CLI and for export.
+  - saving the painting with the scene, for the CLI.
 
 **Test:**
 - `test.cjs` paints a stroke and checks two things: outside the stroke the frame equals the camera
@@ -31,17 +32,29 @@ shows; the eraser paints reality back; **Clear** resets.
 
 ## 2. Export
 
-**What:** an **Export** button that saves what you see as a video file.
+**What:** an **Export** button (or V) that saves what you see as a video file: the whole clip, with the
+current worlds, masks and paint.
 
-**How:**
-- **v1:** `canvas.captureStream()` with `MediaRecorder` records one pass of the clip, from the start
-  with the current settings, as WebM, then offers it as a download. It records in real time, so it
-  needs a machine that plays the page smoothly.
-- **v2 (if v1 drops frames):** step the clip frame by frame, render each one, and encode with
-  WebCodecs. This is slower than real time but never drops a frame.
+**How (built, `portal/export.js`):**
+- The clip is paused and stepped one frame at a time: seek to the frame, find the people, draw, and hand
+  the canvas to the encoder. Nothing runs in real time, so no frame is dropped on a slow machine.
+- Encoding is Mediabunny (MPL-2.0, vendored by `fetch_vendor.sh`, loaded on first use) on the browser's
+  WebCodecs: H.264 in MP4, or VP9 in WebM where H.264 is missing.
+- Effects that depend on time (the crossing burst, the pulse) follow the clip's clock while exporting,
+  so they play at the same moments as in the file.
+- The frame rate comes from the clip (written into `scenes.json` by the build; measured from the video
+  for your own clip).
+- The hosted page saves the file through the viewer's download prompt (the `downloads` capability);
+  the kiosk uses a normal download link.
+- Pressing Export again stops it; playback resumes where it was.
 
-**Test:** `test.cjs` exports 2 s and checks that the file is non-empty and decodes with the expected
-size and duration.
+**Speed:** about 1 s per frame in the headless test browser (software WebGL); a laptop's GPU should be
+several times faster (not yet measured). A 10 fps plaza clip of 3 min is 1,800 frames.
+
+**Test:** `test.cjs` exports 2 s of the plaza and reads the file back: 20 frames at 10 fps, the canvas
+size, 2 s long, playback resumed. A second export is stopped part-way and leaves the page as it was.
+
+**Next:** an in/out range (today it is the whole clip), and a progress bar with time left.
 
 ## 3. AI worlds for your own video
 
@@ -123,18 +136,18 @@ that, so the first question is how far the idea stretches.
 
 ## Options from the state-of-the-art sweep (27 November)
 
-Existing work we could build on, from [state of the art](state-of-the-art.md). None is started. Each
-row says what it would add to the explanation of our method.
+Existing work we could build on, from [state of the art](state-of-the-art.md). Export is built; the rest
+are not started. Each row says what it would add to the explanation of our method.
 
 | Option | Built on | Adds to the explanation | Effort | Risk |
 |---|---|---|---|---|
-| **Export** as MP4, exact frames | Mediabunny (MPL-2.0) on WebCodecs | Nothing: a product feature | 1–1.5 days | Medium: browser support; the hosted page may need a file-save permission |
+| **Export** as MP4, exact frames (built) | Mediabunny (MPL-2.0) on WebCodecs | Nothing: a product feature | 1–1.5 days | Medium: browser support; the hosted page may need a file-save permission |
 | **Proof:** a per-frame Stable Diffusion baseline next to ours | The measures recent papers report: warp error (RAFT), frame-to-frame similarity (CLIP), PSNR on people | One number | 1 day | Low |
 | **Click to paint** a whole region | SlimSAM (Apache-2.0), run once on the empty scene | One sentence: "Segment Anything, once, on the empty scene" | 1 day | Low |
 | **Cleaner people** | BackgroundMattingV2 (MIT), which takes a frame plus a clean plate; or our archived edge-refined matte | One sentence: "a matting model that is given the empty scene" | 1.5–2 days | Medium: it was trained on people near the camera |
 | **Sharper worlds** | SDXL + ControlNet-Union, or FLUX.2 Klein 4B, on a Colab GPU | Nothing: a better image model for the same step | 0.5–1.5 days | Medium: needs a GPU. Decided against for now |
 
-Suggested order: Export and Proof first, because neither adds anything to the method.
+Suggested order: Export (built) and Proof first, because neither adds anything to the method.
 
 **Ideas for the demo video, borrowed from the sweep:**
 - Open on a half-real, half-winter frame, with someone crossing within two seconds.
@@ -146,7 +159,7 @@ Suggested order: Export and Proof first, because neither adds anything to the me
 
 | When | Done |
 |---|---|
-| Check-in 2 (11/30–12/4) | Paint with several worlds (done), the survey and the simple story (done), Export, a first cut of the demo video |
+| Check-in 2 (11/30–12/4) | Paint with several worlds (done), the survey and the simple story (done), Export (done), a first cut of the demo video |
 | By 12/6 | AI worlds for your own video, Sather Gate scene, final demo video |
 | 12/8 or 12/10 | 2-minute presentation |
 | 12/15 | Final report |

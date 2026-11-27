@@ -37,6 +37,7 @@ We looked for the crossing itself, people changing world as a whole by where the
 2. **Pick a world:** generated once by Stable Diffusion, a colour filter, or an image you drop in.
 3. **Choose where it shows:** **Paint** it on, then pick another world and paint again: several worlds at once (right-drag erases, Ctrl+Z undoes). Or pick Line, Portal (a ring on the ground), Lens or Whole frame and drag to move it.
 4. **Watch:** people take on the world's light as they cross into it. **Layers** shows how each frame is built.
+5. **Export:** saves what you see as a video file (MP4), every frame of the clip drawn once.
 
 ## The demo video (60–90 s, a screen recording of the interface)
 
@@ -48,7 +49,7 @@ We looked for the crossing itself, people changing world as a whole by where the
 | 0:35 | Paint: snow on the lawn, night on the building, a Van Gogh path down the road. People change world as they step from one to the next. |
 | 0:50 | Layers: the filmed frame, the empty scene, the world, the people, the mask, the result. |
 | 1:05 | "Your video": drop a clip, the empty scene appears, pick a world. |
-| 1:20 | Export and play the result (coming). |
+| 1:20 | Export, and play the saved file. |
 
 ## The pitch (2 minutes)
 
@@ -72,6 +73,7 @@ We looked for the crossing itself, people changing world as a whole by where the
 | **Composite** | out = (1 − *w*)·F + *w*·[P + (1 − *a*)(R − Q)·S]. F is the frame, R the world, *a* the person mask, P the person in the world's colours, Q the empty scene in the world's colours, S the shadow. Where *w* = 0 the output is the camera pixel. | Ours, from the matting equation | `portal/compositor.js` |
 | **Layers** | The same shader draws each term of the composite as its own tile. | Ours | `portal/compositor.js` |
 | **Crossing glitch** | When someone's feet cross into the world, a short RGB-split burst plays on that person only. | Ours | `portal/app.js` (`onCrossing`) |
+| **Export** | The clip is paused and stepped one frame at a time: seek, find the people, draw, encode. Nothing runs in real time, so no frame is dropped on a slow machine. The browser's own encoder writes H.264 MP4 (VP9 WebM if H.264 is missing). | Built on Mediabunny and WebCodecs | `portal/export.js` |
 
 ## Status
 
@@ -79,10 +81,9 @@ We looked for the crossing itself, people changing world as a whole by where the
   - everything in the table above;
   - three recorded scenes;
   - your own video (with colour-filter worlds and dropped images);
-  - a live-camera kiosk that makes worlds for the room in front of it.
-- **Next:**
   - exporting the result as a video;
-  - generating AI worlds for your own video inside the page.
+  - a live-camera kiosk that makes worlds for the room in front of it.
+- **Next:** generating AI worlds for your own video inside the page.
 - **Later:** both have early versions in the interface.
   - **Depth:** near stays real, far becomes the world.
   - **Morph:** the world grows in through the model's own partial drawings instead of cutting.
@@ -108,6 +109,7 @@ python -m crossover.portal_server          # open http://localhost:8000
 
 ```bash
 bash scripts/fetch_sample.sh && bash scripts/fetch_clips.sh && bash scripts/fetch_depth_model.sh
+bash portal/fetch_vendor.sh               # the in-browser segmenter and the video encoder for Export
 python -m crossover.prepare data/sample/vtest.avi --name vtest          # empty scene + depth -> out/clips/vtest/
 python -m crossover.generate --clean out/clips/vtest/clean_bg.png --depth out/clips/vtest/depth_disparity.npy \
     --styles winter,night --init filter --out out/clips/vtest/gen    # then list your picks in gen/picks.txt

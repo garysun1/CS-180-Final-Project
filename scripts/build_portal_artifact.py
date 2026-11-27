@@ -55,7 +55,8 @@ SCENES = [
          depth="out/clips/cartraffic01/depth_disparity.npy", start_world="Cyberpunk", tau=0.5,
          portal=dict(x=0.55, y=0.62, r=0.2)),
 ]
-JS = ["app.js", "compositor.js", "plate.js", "audio.js", "paint.js"]      # segment.js is not needed: no segmenter here
+JS = ["app.js", "compositor.js", "plate.js", "audio.js", "paint.js", "export.js"]   # segment.js: no segmenter here
+VENDOR = ["mediabunny.min.mjs"]   # the video encoder Export loads on first use (portal/fetch_vendor.sh)
 CSP = ("default-src 'none'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net/npm/ "
        "https://unpkg.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; "
        "img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; worker-src blob:")
@@ -171,6 +172,12 @@ def build(out: str, harness: bool = False) -> tuple[dict, list, dict]:
     os.makedirs(media, exist_ok=True)
     for name in JS:
         shutil.copy(os.path.join(PORTAL, name), os.path.join(out, name))
+    os.makedirs(os.path.join(out, "vendor"), exist_ok=True)
+    for name in VENDOR:
+        src = os.path.join(PORTAL, "vendor", name)
+        if not os.path.exists(src):
+            raise SystemExit(f"missing {src}: run portal/fetch_vendor.sh")
+        shutil.copy(src, os.path.join(out, "vendor", name))
     shutil.copy(os.path.join(PORTAL, "artifact", "page.html"), os.path.join(out, "page.html"))
     scenes, rung_sizes = [], {}
     for sc in SCENES:
@@ -181,6 +188,7 @@ def build(out: str, harness: bool = False) -> tuple[dict, list, dict]:
         sid = sc["id"]
         clip = f"media/{sid}.mp4"
         encode_clip(os.path.join(ROOT, sc["video"]), os.path.join(out, clip), w, h, sc["start"], sc["dur"])
+        fps = cv2.VideoCapture(os.path.join(out, clip)).get(cv2.CAP_PROP_FPS)     # Export steps at this rate
         cv2.imwrite(os.path.join(out, f"media/{sid}_plate.jpg"), plate, [cv2.IMWRITE_JPEG_QUALITY, 92])
         worlds = []
         for style, stem in picks(os.path.join(ROOT, sc["gen"])):
@@ -203,7 +211,7 @@ def build(out: str, harness: bool = False) -> tuple[dict, list, dict]:
                 cv2.imwrite(os.path.join(media, f"{sid}_{style}_lacref.png"), lac.apply(plate))
         entry = {"id": sid, "name": sc["name"], "clip": clip, "plate": f"media/{sid}_plate.jpg", "worlds": worlds,
                  "startWorld": sc["start_world"], "startTime": sc["start_time"], "portal": sc["portal"],
-                 "line": dict(x=0.5, y=0.5, angle=0), "tau": sc["tau"]}
+                 "line": dict(x=0.5, y=0.5, angle=0), "tau": sc["tau"], "fps": round(fps, 3)}
         disp_path = os.path.join(ROOT, sc["depth"])
         if os.path.exists(disp_path):
             img, gmax = far_png(np.load(disp_path), (w, h))
